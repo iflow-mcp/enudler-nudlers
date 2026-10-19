@@ -17,8 +17,7 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import SendIcon from '@mui/icons-material/Send';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 import PersonIcon from '@mui/icons-material/Person';
-import ChevronRightIcon from '@mui/icons-material/ChevronRight';
-import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlineOutlined';
 import StorageIcon from '@mui/icons-material/Storage';
 import CloseIcon from '@mui/icons-material/Close';
 import HistoryIcon from '@mui/icons-material/History';
@@ -27,6 +26,8 @@ import ChatIcon from '@mui/icons-material/Chat';
 import { useAI } from '../context/AIContext';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useTranslation } from 'react-i18next';
+import { useLocale } from '../context/LocaleContext';
 
 interface Message {
   id: string;
@@ -68,19 +69,22 @@ interface AIAssistantProps {
   screenContext?: ScreenContext;
 }
 
-const QUICK_PROMPTS = [
-  { label: "📊 Category breakdown", prompt: "Show my spending breakdown by category for this month with amounts and percentages" },
-  { label: "💰 Top expenses", prompt: "List my 10 biggest transactions this month with amounts" },
-  { label: "📈 Monthly comparison", prompt: "Compare this month vs last month spending - what changed the most?" },
-  { label: "🔄 Recurring costs", prompt: "Show all my recurring subscriptions and installment plans with monthly costs" },
-];
-
 export const DRAWER_WIDTH = 400;
 
 const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const { isOpen, closeAI, initialPrompt, setInitialPrompt } = useAI();
+  const { t } = useTranslation('views');
+  const { locale } = useLocale();
+  const dateLocale = locale === 'he' ? 'he-IL' : 'en-US';
+
+  const QUICK_PROMPTS = [
+    { label: t('chat.examples.categoryBreakdown'), prompt: t('chat.examples.categoryBreakdownPrompt') },
+    { label: t('chat.examples.topExpenses'), prompt: t('chat.examples.topExpensesPrompt') },
+    { label: t('chat.examples.monthlyComparison'), prompt: t('chat.examples.monthlyComparisonPrompt') },
+    { label: t('chat.examples.recurringCosts'), prompt: t('chat.examples.recurringCostsPrompt') },
+  ];
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
@@ -129,8 +133,11 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
         sendMessage(initialPrompt);
         setInitialPrompt('');
       }
+      // If a request is in flight, keep the prompt queued; isLoading flipping
+      // back to false re-runs this effect and sends it then.
     }
-  }, [initialPrompt, isOpen]); // removed dependency on sendMessage to avoid loop, it's useCallback anyway
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sendMessage/setInitialPrompt intentionally excluded to avoid send loop
+  }, [initialPrompt, isOpen, isLoading]);
 
   const fetchSessions = async () => {
     try {
@@ -151,7 +158,7 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
       const response = await fetch(`/api/chat/messages?sessionId=${sessionId}`);
       if (response.ok) {
         const data = await response.json();
-        setMessages(data.map((m: any) => ({
+        setMessages(data.map((m: { timestamp: string;[key: string]: unknown }) => ({
           ...m,
           timestamp: new Date(m.timestamp),
           status: 'complete'
@@ -225,7 +232,7 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
     setMessages(prev => [...prev, userMessage, assistantMessage]);
     setInputValue('');
     setIsLoading(true);
-    setCurrentStatus('Thinking...');
+    setCurrentStatus(t('chat.thinking'));
 
     // Set a timeout
     const timeoutId = setTimeout(() => {
@@ -233,7 +240,7 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
         abortControllerRef.current.abort();
         setMessages(prev => prev.map(m =>
           m.id === assistantMessageId
-            ? { ...m, content: 'Error: Request timed out. The AI might be taking too long to analyze.', status: 'error' }
+            ? { ...m, content: t('chat.errorTimedOut'), status: 'error' }
             : m
         ));
         setIsLoading(false);
@@ -257,11 +264,11 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to get response');
+        throw new Error(errorData.error || t('chat.errorFailedToGet'));
       }
 
       const reader = response.body?.getReader();
-      if (!reader) throw new Error('No response stream');
+      if (!reader) throw new Error(t('chat.errorNoResponseStream'));
 
       const decoder = new TextDecoder();
       let buffer = '';
@@ -290,14 +297,14 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
               if (data.error) {
                 setMessages(prev => prev.map(m =>
                   m.id === assistantMessageId
-                    ? { ...m, content: `Error: ${data.error}`, status: 'error' }
+                    ? { ...m, content: t('chat.errorWithMessage', { message: data.error }), status: 'error' }
                     : m
                 ));
                 setCurrentStatus('');
               } else if (data.status === 'thinking') {
-                setCurrentStatus('Thinking...');
+                setCurrentStatus(t('chat.thinking'));
               } else if (data.status === 'fetching_data') {
-                const statusMsg = data.message || `Fetching ${data.functions?.join(', ') || 'data'}...`;
+                const statusMsg = data.message || t('chat.fetchingDynamic', { what: data.functions?.join(', ') || t('chat.fetchingFallback') });
                 setCurrentStatus(statusMsg);
                 setMessages(prev => prev.map(m =>
                   m.id === assistantMessageId
@@ -305,7 +312,7 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
                     : m
                 ));
               } else if (data.status === 'streaming' || data.status === 'complete') {
-                setCurrentStatus(data.status === 'streaming' ? 'Writing...' : '');
+                setCurrentStatus(data.status === 'streaming' ? t('chat.writing') : '');
                 setMessages(prev => prev.map(m =>
                   m.id === assistantMessageId
                     ? {
@@ -322,24 +329,23 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
           }
         }
       }
-
-      clearTimeout(timeoutId);
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
         return;
       }
       setMessages(prev => prev.map(m =>
         m.id === assistantMessageId
-          ? { ...m, content: `Error: ${(err as Error).message}`, status: 'error' }
+          ? { ...m, content: t('chat.errorWithMessage', { message: (err as Error).message }), status: 'error' }
           : m
       ));
     } finally {
+      clearTimeout(timeoutId);
       setIsLoading(false);
       setCurrentStatus('');
       // If session was created, ensure title is updated
       fetchSessions();
     }
-  }, [isLoading, screenContext, currentSessionId]);
+  }, [isLoading, screenContext, currentSessionId, t]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -376,18 +382,20 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
         keepMounted: true, // Better open performance
         hideBackdrop: !isMobile, // No backdrop on desktop to allow interaction
       }}
-      PaperProps={{
-        sx: {
-          width: isMobile ? '100%' : 400,
-          background: theme.palette.mode === 'dark'
-            ? 'rgba(15, 23, 42, 0.95)'
-            : 'rgba(255, 255, 255, 0.98)',
-          backdropFilter: 'blur(12px)',
-          borderLeft: `1px solid ${theme.palette.divider}`,
-          boxShadow: '-4px 0 20px rgba(0,0,0,0.1)'
+      transitionDuration={300}
+      slotProps={{
+        paper: {
+          sx: {
+            width: isMobile ? '100%' : 400,
+            background: theme.palette.mode === 'dark'
+              ? 'rgba(15, 23, 42, 0.95)'
+              : 'rgba(255, 255, 255, 0.98)',
+            backdropFilter: 'blur(12px)',
+            borderLeft: `1px solid ${theme.palette.divider}`,
+            boxShadow: '-4px 0 20px rgba(0,0,0,0.1)'
+          }
         }
       }}
-      transitionDuration={300}
     >
       {/* Header */}
       <Box
@@ -416,30 +424,36 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
         </Box>
 
         <Box sx={{ flex: 1 }}>
-          <Typography variant="subtitle1" fontWeight={700} sx={{ lineHeight: 1.2 }}>
-            AI Assistant
+          <Typography
+            variant="subtitle1"
+            sx={{
+              fontWeight: 700,
+              lineHeight: 1.2
+            }}>
+            {t('chat.title')}
           </Typography>
-          <Typography variant="caption" color="text.secondary">
+          <Typography variant="caption" sx={{
+            color: "text.secondary"
+          }}>
             {currentSessionId
-              ? sessions.find(s => s.id === currentSessionId)?.title || 'Current Session'
-              : 'New Conversation'}
+              ? sessions.find(s => s.id === currentSessionId)?.title || t('chat.currentSession')
+              : t('chat.newConversation')}
           </Typography>
         </Box>
 
-        <IconButton onClick={() => setShowHistory(!showHistory)} color={showHistory ? 'primary' : 'default'} title="History">
+        <IconButton onClick={() => setShowHistory(!showHistory)} color={showHistory ? 'primary' : 'default'} title={t('chat.historyTitle')}>
           <HistoryIcon />
         </IconButton>
-        <IconButton onClick={closeAI} edge="end" title="Close">
+        <IconButton onClick={closeAI} edge="end" title={t('chat.closeTitle')}>
           <CloseIcon />
         </IconButton>
       </Box>
-
       {/* Content Area */}
       <Box sx={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
 
         {showHistory ? (
           // HISTORY VIEW
-          <Box sx={{ flex: 1, overflowY: 'auto' }}>
+          (<Box sx={{ flex: 1, overflowY: 'auto' }}>
             <Box sx={{ p: 2 }}>
               <ListItemButton
                 onClick={startNewChat}
@@ -454,11 +468,13 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
                 }}
               >
                 <AddIcon sx={{ mr: 1 }} />
-                <Typography fontWeight={600}>New Chat</Typography>
+                <Typography sx={{
+                  fontWeight: 600
+                }}>{t('chat.newChat')}</Typography>
               </ListItemButton>
 
               <Typography variant="overline" sx={{ px: 1, color: 'text.secondary', fontWeight: 700 }}>
-                Recent Conversations
+                {t('chat.recentConversations')}
               </Typography>
 
               <List>
@@ -485,12 +501,13 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
                         <ChatIcon fontSize="small" color={currentSessionId === session.id ? 'primary' : 'inherit'} />
                       </ListItemIcon>
                       <ListItemText
-                        primary={session.title || 'Untitled Conversation'}
-                        secondary={new Date(session.updated_at).toLocaleDateString()}
-                        primaryTypographyProps={{
-                          noWrap: true,
-                          fontSize: '0.9rem',
-                          fontWeight: currentSessionId === session.id ? 600 : 400
+                        primary={session.title || t('chat.untitledConversation')}
+                        secondary={new Date(session.updated_at).toLocaleDateString(dateLocale)}
+                        slotProps={{
+                          primary: {
+                            noWrap: true,
+                            sx: { fontSize: '0.9rem', fontWeight: currentSessionId === session.id ? 600 : 400 }
+                          }
                         }}
                       />
                     </ListItemButton>
@@ -500,21 +517,25 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
 
               {sessions.length === 0 && (
                 <Box sx={{ textAlign: 'center', py: 4, color: 'text.secondary' }}>
-                  <Typography variant="body2">No history yet</Typography>
+                  <Typography variant="body2">{t('chat.noHistoryYet')}</Typography>
                 </Box>
               )}
             </Box>
-          </Box>
+          </Box>)
         ) : (
           // CHAT VIEW
-          <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-
+          (<Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
             {/* Messages */}
             <Box sx={{ flex: 1, overflowY: 'auto', p: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
               {messages.length === 0 && !isLoading ? (
                 <Box sx={{ mt: 4, textAlign: 'center' }}>
-                  <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-                    I can help you analyze your finances.<br />Try asking something like:
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      color: "text.secondary",
+                      mb: 3
+                    }}>
+                    {t('chat.emptyStateAssistantHint')}<br />{t('chat.tryAsking')}
                   </Typography>
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                     {QUICK_PROMPTS.map((q, i) => (
@@ -610,7 +631,7 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
                       ) : (
                         <span style={{ display: 'flex', alignItems: 'center', gap: 8, color: theme.palette.text.secondary, fontSize: '0.8rem' }}>
                           <CircularProgress size={12} color="inherit" />
-                          {currentStatus || 'Thinking...'}
+                          {currentStatus || t('chat.thinking')}
                         </span>
                       )}
                     </Box>
@@ -619,7 +640,6 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
               )}
               <div ref={messagesEndRef} />
             </Box>
-
             {/* Input */}
             <Box sx={{ p: 2, borderTop: `1px solid ${theme.palette.divider}`, background: theme.palette.background.paper }}>
               <form onSubmit={handleSubmit} style={{ display: 'flex', gap: 10 }}>
@@ -631,7 +651,7 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
                   onKeyPress={handleKeyPress}
-                  placeholder="Ask anything..."
+                  placeholder={t('chat.placeholderShort')}
                   disabled={isLoading}
                   variant="outlined"
                   size="small"
@@ -663,8 +683,7 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ screenContext }) => {
                 </IconButton>
               </form>
             </Box>
-
-          </Box>
+          </Box>)
         )}
 
       </Box>

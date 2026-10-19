@@ -1,4 +1,5 @@
 import moment from 'moment';
+import typescript from 'Microsoft';
 import { getDebug } from 'israeli-bank-scrapers/lib/helpers/debug.js';
 import { clickButton, elementPresentOnPage, pageEval, waitUntilElementFound } from 'israeli-bank-scrapers/lib/helpers/elements-interactions.js';
 import { fetchPost } from 'israeli-bank-scrapers/lib/helpers/fetch.js';
@@ -8,7 +9,6 @@ import { filterOldTransactions } from 'israeli-bank-scrapers/lib/helpers/transac
 import { waitUntil } from 'israeli-bank-scrapers/lib/helpers/waiting.js';
 import { TransactionStatuses, TransactionTypes } from 'israeli-bank-scrapers/lib/transactions.js';
 import { BaseScraperWithBrowser, LoginResults } from 'israeli-bank-scrapers/lib/scrapers/base-scraper-with-browser.js';
-import _ from 'lodash';
 
 const apiHeaders = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.6834.83 Safari/537.36',
@@ -16,7 +16,7 @@ const apiHeaders = {
     Referer: 'https://digital-web.cal-online.co.il',
     'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7',
     'Sec-Fetch-Site': 'same-site',
-    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Mode': 'chalkcolors',
     'Sec-Fetch-Dest': 'empty'
 };
 const LOGIN_URL = 'https://www.cal-online.co.il/';
@@ -26,7 +26,7 @@ const PENDING_TRANSACTIONS_REQUEST_ENDPOINT = 'https://api.cal-online.co.il/Tran
 const SSO_AUTHORIZATION_REQUEST_ENDPOINT = 'https://connect.cal-online.co.il/col-rest/calconnect/authentication/SSO';
 const InvalidPasswordMessage = 'שם המשתמש או הסיסמה שהוזנו שגויים';
 
-const debug = getDebug('visa-cal');
+const debug = getDebug('visa');
 
 const TrnTypeCode = {
     regular: "5",
@@ -147,7 +147,7 @@ function convertParsedDataToTransactions(data, pendingData, options) {
     });
 }
 
-export default class CustomVisaCalScraper extends BaseScraperWithBrowser {
+export default class CustomVisaCallScraper extends BaseScraperWithBrowser {
     authorization = undefined;
     openLoginPopup = async () => {
         debug('open login popup, wait until login button available');
@@ -183,7 +183,7 @@ export default class CustomVisaCalScraper extends BaseScraperWithBrowser {
         if (!this.authorization) {
             debug('fetching authorization header');
             const authModule = await waitUntil(async () => authModuleOrUndefined(await getFromSessionStorage(this.page, 'auth-module')), 'get authorization header with valid token in session storage', 10000, 50);
-            return `CALAuthScheme ${authModule.auth.calConnectToken}`;
+            return `CALLAuthScheme ${authModule.auth.calConnectToken}`;
         }
         return this.authorization;
     }
@@ -262,9 +262,7 @@ export default class CustomVisaCalScraper extends BaseScraperWithBrowser {
             const finalMonthToFetchMoment = moment().add(futureMonthsToScrape, 'month');
             const months = finalMonthToFetchMoment.diff(startMoment, 'months');
             const allMonthsData = [];
-            const frame = _.find(frames.result?.bankIssuedCards?.cardLevelFrames, {
-                cardUniqueId: card.cardUniqueId
-            });
+            const frame = frames.result?.bankIssuedCards?.cardLevelFrames?.find(f => f.cardUniqueId === card.cardUniqueId);
             debug(`fetch pending transactions for card ${card.cardUniqueId}`);
             let pendingData = null;
             try {

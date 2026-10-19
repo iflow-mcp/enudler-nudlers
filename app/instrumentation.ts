@@ -89,14 +89,29 @@ export async function register() {
       logger.error({ error: err.message, stack: err.stack }, '[startup] Failed to run migrations');
     }
 
-    // Initialize WhatsApp Client (Singleton)
+    // Initialize the Baileys WhatsApp client. Importing the module fires
+    // autoRestoreSession() — which kicks off `initializeClient()` if a
+    // session is on disk. We then `ensureConnected()` with a generous
+    // budget so the *first* user-clicked send doesn't pay the cold-connect
+    // cost (which is what causes the NAS reverse proxy to drop the
+    // response with an HTML 504 even when Baileys eventually relays the
+    // message).
+    //
+    // Failure here must never block startup — if WhatsApp can't be
+    // pre-warmed we just log and move on; the on-demand path still works.
     try {
-      logger.info('[startup] Initializing WhatsApp Client singleton');
-      const { getClient } = await import('./utils/whatsapp-client.js');
-      getClient(); // Triggers initialization
+      logger.info('[startup] Initializing WhatsApp (Baileys) client');
+      const wa = await import('./utils/whatsapp-client.js');
+      // Fire-and-forget: 30s ceiling, unawaited. We don't want startup
+      // blocked on the QR-pending case (no session yet) so we let it
+      // resolve in the background.
+      wa.ensureConnected({ timeoutMs: 30_000 }).then(
+        () => logger.info('[startup] WhatsApp client pre-warmed'),
+        (err: Error) => logger.warn({ err: err.message }, '[startup] WhatsApp pre-warm did not complete (will connect on demand)'),
+      );
     } catch (error: unknown) {
       const err = error as Error;
-      logger.error({ error: err.message }, '[startup] Failed to initialize WhatsApp Client');
+      logger.error({ error: err.message }, '[startup] Failed to initialize WhatsApp client');
     }
 
 
@@ -123,10 +138,12 @@ export async function register() {
           const client = await getDB();
 
           try {
-            // Get WhatsApp settings
+            // Daily-summary scheduling settings. The actual messaging-channel
+            // settings (whatsapp_enabled / telegram_enabled / recipients) are
+            // loaded inside the dispatcher.
             const settingsResult = await client.query(
-              `SELECT key, value FROM app_settings 
-               WHERE key IN ('whatsapp_enabled', 'whatsapp_hour', 'whatsapp_last_sent_date', 'whatsapp_to')`
+              `SELECT key, value FROM app_settings
+               WHERE key IN ('whatsapp_enabled', 'telegram_enabled', 'whatsapp_hour', 'whatsapp_last_sent_date')`
             );
 
             const settings: Record<string, unknown> = {};
@@ -134,64 +151,64 @@ export async function register() {
               settings[row.key] = row.value;
             }
 
-            // Check if enabled
-            if (settings.whatsapp_enabled !== true && settings.whatsapp_enabled !== 'true') {
+            const { evaluateDailyCronGuard } = await import('./utils/cronGuards');
+            // Run the cron if EITHER channel is enabled. The dispatcher
+            // decides which actually fire — it's fine for one to be off.
+            const anyChannelEnabledRaw = (() => {
+              const truthy = (v: unknown) => v === true || v === 'true' || v === '"true"';
+              return truthy(settings.whatsapp_enabled) || truthy(settings.telegram_enabled);
+            })();
+            const guard = evaluateDailyCronGuard({
+              enabledValue: anyChannelEnabledRaw,
+              hourValue: settings.whatsapp_hour,
+              lastRunValue: settings.whatsapp_last_sent_date,
+              defaultHour: 8,
+            });
+
+            if (!guard.shouldRun) {
+              logger.info({ ...guard }, '[messaging-cron] Skipping execution');
               return;
             }
 
-            // Check if we're at the right hour
-            const now = new Date();
-            const currentHour = now.getHours();
-            const targetHour = parseInt((settings.whatsapp_hour as string) || '8', 10);
-
-            if (currentHour !== targetHour) {
-              return;
-            }
-
-            // Check if we already sent today
-            const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-            const lastSentDate = typeof settings.whatsapp_last_sent_date === 'string'
-              ? settings.whatsapp_last_sent_date.replace(/"/g, '')
-              : '';
-
-            if (lastSentDate === today) {
-              return;
-            }
-
-            logger.info('[whatsapp-cron] Sending daily summary');
+            const today = guard.today;
 
             // Generate summary
             const { generateDailySummary } = await import('./utils/summary.js');
             const summary = await generateDailySummary();
 
-            // Send WhatsApp message
-            const { sendWhatsAppMessage } = await import('./utils/whatsapp.js');
-            const to = typeof settings.whatsapp_to === 'string'
-              ? settings.whatsapp_to.replace(/"/g, '')
-              : settings.whatsapp_to as string;
-
-            await sendWhatsAppMessage({
-              to,
-              body: summary
+            // Fan out to every enabled provider. One channel failing must
+            // never block another — sendNotification is partial-failure
+            // tolerant.
+            const { sendNotification } = await import('./utils/messaging/index.js');
+            const dispatch = await sendNotification({
+              body: summary,
+              purpose: 'daily_summary',
             });
 
-            // Update last sent date
-            await client.query(
-              `UPDATE app_settings SET value = $1, updated_at = CURRENT_TIMESTAMP WHERE key = 'whatsapp_last_sent_date'`,
-              [JSON.stringify(today)]
-            );
+            // Update last sent date — only if at least one channel actually
+            // delivered. Otherwise we want the cron to retry on its next run.
+            if (dispatch.succeeded > 0) {
+              await client.query(
+                `UPDATE app_settings SET value = $1, updated_at = CURRENT_TIMESTAMP WHERE key = 'whatsapp_last_sent_date'`,
+                [JSON.stringify(today)]
+              );
+            }
 
             // Log to audit (scrape_events table)
+            const status = dispatch.succeeded > 0 ? 'success' : 'failed';
+            const auditMsg = dispatch.attempted === 0
+              ? 'No messaging channels enabled'
+              : `Daily summary: ${dispatch.succeeded}/${dispatch.attempted} channels succeeded`;
             await client.query(
               `INSERT INTO scrape_events (triggered_by, vendor, start_date, status, message, report_json)
                VALUES ($1, $2, $3, $4, $5, $6)`,
-              ['whatsapp_cron', 'whatsapp_summary', today, 'success', `WhatsApp summary sent to ${to}`, JSON.stringify({ body: summary, to })]
+              ['messaging_cron', 'daily_summary', today, status, auditMsg, JSON.stringify({ body: summary, dispatch })]
             );
 
-            logger.info('[whatsapp-cron] Daily summary sent successfully');
+            logger.info({ dispatch }, '[messaging-cron] Daily summary dispatched');
           } catch (error: unknown) {
             const err = error as Error;
-            logger.error({ error: err.message, stack: err.stack }, '[whatsapp-cron] Error sending daily summary');
+            logger.error({ error: err.message, stack: err.stack }, '[messaging-cron] Error sending daily summary');
 
             // Log failure to audit
             const errorMsg = (error as Error).message;
@@ -200,23 +217,23 @@ export async function register() {
             await client.query(
               `INSERT INTO scrape_events (triggered_by, vendor, start_date, status, message, report_json)
                VALUES ($1, $2, $3, $4, $5, $6)`,
-              ['whatsapp_cron', 'whatsapp_summary', todayDate, 'failed', errorMsg, JSON.stringify({ error: errorMsg })]
+              ['messaging_cron', 'daily_summary', todayDate, 'failed', errorMsg, JSON.stringify({ error: errorMsg })]
             ).catch(() => { }); // Ignore if this fails
           } finally {
             client.release();
           }
         } catch (error: unknown) {
           const err = error as Error;
-          logger.error({ error: err.message }, '[whatsapp-cron] Failed to execute cron job');
+          logger.error({ error: err.message }, '[messaging-cron] Failed to execute cron job');
         } finally {
           whatsappCronRunning = false;
         }
       });
 
-      logger.info('[startup] WhatsApp cron job initialized');
+      logger.info('[startup] Daily summary cron job initialized');
     } catch (error: unknown) {
       const err = error as Error;
-      logger.warn({ error: err.message }, '[startup] WhatsApp cron job initialization failed');
+      logger.warn({ error: err.message }, '[startup] Daily summary cron job initialization failed');
     }
 
     // Initialize Background Sync cron job
@@ -254,32 +271,20 @@ export async function register() {
               settings[row.key] = row.value;
             }
 
-            // Check if enabled
-            if (settings.sync_enabled !== true && settings.sync_enabled !== 'true') {
+            const { evaluateDailyCronGuard } = await import('./utils/cronGuards');
+            const guard = evaluateDailyCronGuard({
+              enabledValue: settings.sync_enabled,
+              hourValue: settings.sync_hour,
+              lastRunValue: settings.sync_last_run_at,
+              defaultHour: 3,
+            });
+
+            if (!guard.shouldRun) {
+              logger.info({ ...guard }, '[sync-cron] Skipping execution');
               return;
             }
 
-            // Check if we're at the right hour
-            const now = new Date();
-            const currentHour = now.getHours();
-            const targetHour = parseInt((settings.sync_hour as string) || '3', 10);
-
-            if (currentHour !== targetHour) {
-              return;
-            }
-
-            // Check if we already ran today
-            const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-            const lastRunStr = typeof settings.sync_last_run_at === 'string'
-              ? settings.sync_last_run_at.replace(/"/g, '')
-              : '';
-            const lastRunDate = lastRunStr.split('T')[0];
-
-            if (lastRunDate === today) {
-              return;
-            }
-
-            logger.info({ currentHour, today }, '[sync-cron] Triggering daily background sync');
+            logger.info({ currentHour: guard.targetHour, today: guard.today }, '[sync-cron] Triggering daily background sync');
 
             // Import and run the background sync
             const { runBackgroundSync } = await import('./scripts/background-sync.js');
@@ -293,6 +298,19 @@ export async function register() {
             );
 
             logger.info('[sync-cron] Background sync completed and last run time updated');
+
+            // Refresh the anomaly inbox now that we have new transactions.
+            // Detection is fingerprint-keyed, so re-runs are idempotent — at
+            // worst we update timestamps on existing rows. Wrapped in its
+            // own try so an evaluator hiccup never breaks the sync.
+            try {
+              const { evaluateAnomalies } = await import('./utils/anomaly/evaluate.js');
+              const summary = await evaluateAnomalies();
+              logger.info({ ...summary }, '[sync-cron] Anomaly evaluation completed');
+            } catch (evalErr: unknown) {
+              const e = evalErr as Error;
+              logger.error({ error: e.message }, '[sync-cron] Anomaly evaluation failed (non-fatal)');
+            }
           } catch (error: unknown) {
             const err = error as Error;
             logger.error({ error: err.message, stack: err.stack }, '[sync-cron] Error during background sync');
@@ -343,6 +361,23 @@ export async function register() {
     } catch (error: unknown) {
       const err = error as Error;
       logger.error({ error: err.message }, '[startup] Failed to check vault initialization status');
+    }
+
+    // Fire-and-forget WhatsApp message: "the app just started and the vault is
+    // waiting to be unlocked." Lets the user know their server came back up
+    // (deploy, NAS reboot, OOM) without having to actively check.
+    //
+    // Not awaited — the WhatsApp client is still authenticating right now;
+    // notifyAppStartedWithLockedVault waits internally for the `ready` event
+    // (with a 90s ceiling) before sending. We don't want startup blocked on it.
+    try {
+      const { notifyAppStartedWithLockedVault } = await import('./utils/whatsappStartupNotify.js');
+      notifyAppStartedWithLockedVault().catch((err: Error) => {
+        logger.warn({ error: err.message }, '[startup] Restart-with-locked-vault notification failed (non-fatal)');
+      });
+    } catch (error: unknown) {
+      const err = error as Error;
+      logger.warn({ error: err.message }, '[startup] Failed to schedule restart-locked notification');
     }
 
   }

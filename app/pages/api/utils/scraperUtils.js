@@ -24,11 +24,27 @@ import {
 } from '../../../utils/constants.js';
 import { generateTransactionIdentifier } from './transactionUtils.js';
 import { createScraper } from 'israeli-bank-scrapers';
+import { handleHapoalimOtp, isOtpPage } from '../../../scrapers/hapoalimOtp.js';
+import { clearPendingOtp, waitForOtp } from '../scrapers/otp.js';
+import { installScrapeFetchInterceptor } from './scraperErrors.js';
 import logger from '../../../utils/logger.js';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+// pkillQuiet replaces `exec("pkill -f '<pattern>' || true")`. Using execFile
+// (argv form, no shell parser) removes the latent shell-injection sink if any
+// caller ever passes a non-literal pattern. Swallows non-zero exit codes to
+// emulate the original `|| true` semantics (pkill returns 1 when no process
+// matches, which is expected here).
+async function pkillQuiet(pattern) {
+  try {
+    await execFileAsync('pkill', ['-f', pattern]);
+  } catch {
+    // no-op: pkill exits non-zero when nothing matches, which is fine.
+  }
+}
 import {
   getChromePath,
   getScraperOptions,
@@ -221,6 +237,9 @@ export function prepareCredentials(vendor, rawCredentials) {
     card6Digits,
     nickname,
     userCode,
+    email,
+    phoneNumber,
+    otpLongTermToken,
     ...rest
   } = rawCredentials;
 
@@ -232,6 +251,18 @@ export function prepareCredentials(vendor, rawCredentials) {
     const hapoalimUserCode = userCode || username || id || rawCredentials.id_number || '';
     credentials.userCode = String(hapoalimUserCode);
     credentials.password = String(password || '');
+  } else if (vendor === 'onezero') {
+    // OneZero uses email + password and one of two 2FA modes:
+    //   1. otpLongTermToken (re-login without SMS)
+    //   2. phoneNumber + otpCodeRetriever callback (first-time / after token expiry)
+    // The otpCodeRetriever is wired in runScraper(), not here, since it depends on the live progress emitter.
+    credentials.email = String(email || username || '');
+    credentials.password = String(password || '');
+    if (otpLongTermToken) {
+      credentials.otpLongTermToken = String(otpLongTermToken);
+    } else if (phoneNumber) {
+      credentials.phoneNumber = String(phoneNumber);
+    }
   } else if (STANDARD_BANK_VENDORS.includes(vendor) || BEINLEUMI_GROUP_VENDORS.includes(vendor) || vendor === 'igud' || vendor === 'massad' || vendor === 'discount') {
     // Standard bank login (username + password, sometimes num)
     credentials.username = username;
@@ -259,6 +290,13 @@ export function validateCredentials(credentials, vendor) {
   if (vendor === 'hapoalim') {
     if (!credentials.userCode || !credentials.password) {
       throw new Error(`Invalid credentials for ${vendor}: userCode and password are required.`);
+    }
+  } else if (vendor === 'onezero') {
+    if (!credentials.email || !credentials.password) {
+      throw new Error(`Invalid credentials for ${vendor}: email and password are required.`);
+    }
+    if (!credentials.otpLongTermToken && !credentials.phoneNumber) {
+      throw new Error(`Invalid credentials for ${vendor}: either otpLongTermToken or phoneNumber is required.`);
     }
   } else if (vendor === 'isracard' || vendor === 'amex') {
     if (!credentials.id || !credentials.card6Digits || !credentials.password) {
@@ -539,6 +577,11 @@ export async function checkCardOwnership(client, accountNumber, vendor, currentC
 
 /**
  * Claim ownership of a card for a specific credential
+ * @param {any} client
+ * @param {string} accountNumber
+ * @param {string} vendor
+ * @param {number} credentialId
+ * @param {number | null} [balance]
  */
 export async function claimCardOwnership(client, accountNumber, vendor, credentialId, balance = null) {
   // Insert or update card ownership
@@ -575,6 +618,13 @@ export async function insertScrapeAudit(client, triggeredBy, vendor, startDate, 
 
 /**
  * Update a scrape audit row
+ * @param {any} client
+ * @param {number} auditId
+ * @param {string} status
+ * @param {string} message
+ * @param {any} [report]
+ * @param {number | null} [retryCount]
+ * @param {number | null} [durationSeconds]
  */
 export async function updateScrapeAudit(client, auditId, status, message, report = null, retryCount = null, durationSeconds = null) {
   if (!auditId) return;
@@ -716,16 +766,16 @@ export async function stopAllScrapers(client) {
   try {
     if (process.platform === 'darwin') {
       // macOS: target Chrome/Chromium with headless or automation flags
-      await execAsync("pkill -f 'Google Chrome.*headless' || true");
-      await execAsync("pkill -f 'Chromium.*headless' || true");
-      await execAsync("pkill -f 'Chrome for Testing.*headless' || true");
-      await execAsync("pkill -f 'Google Chrome.*remote-debugging-port=9223' || true");
-      await execAsync("pkill -f 'Chrome for Testing.*remote-debugging-port=9223' || true");
+      await pkillQuiet('Google Chrome.*headless');
+      await pkillQuiet('Chromium.*headless');
+      await pkillQuiet('Chrome for Testing.*headless');
+      await pkillQuiet('Google Chrome.*remote-debugging-port=9223');
+      await pkillQuiet('Chrome for Testing.*remote-debugging-port=9223');
     } else {
       // Linux/others
-      await execAsync("pkill -f 'chromium.*headless' || true");
-      await execAsync("pkill -f 'chrome.*headless' || true");
-      await execAsync("pkill -f 'Chrome for Testing.*headless' || true");
+      await pkillQuiet('chromium.*headless');
+      await pkillQuiet('chrome.*headless');
+      await pkillQuiet('Chrome for Testing.*headless');
     }
     logger.info('[Scraper Utils] Browser processes killed');
   } catch (err) {
@@ -735,10 +785,11 @@ export async function stopAllScrapers(client) {
 
 /**
  * Runs the scraper directly in the main process
- * @param {Object} client - DB Client (optional, required for smart scraping)
- * @param {Object} scraperOptions - Options for createScraper
- * @param {Object} credentials - Scraper credentials
- * @param {Function} onProgress - Progress callback
+ * @param {any} client - DB Client (optional, required for smart scraping)
+ * @param {any} scraperOptions - Options for createScraper
+ * @param {any} credentials - Scraper credentials
+ * @param {Function | null} onProgress - Progress callback
+ * @param {Function | null} [checkCancelled]
  */
 export async function runScraper(client, scraperOptions, credentials, onProgress, checkCancelled = null) {
   logger.info({ companyId: scraperOptions.companyId }, '[Scraper] Starting Direct Scrape');
@@ -760,12 +811,32 @@ export async function runScraper(client, scraperOptions, credentials, onProgress
     ? await getIsracardScrapeCategoriesSetting(client)
     : true;
 
+  // For Hapoalim: extend timeout BEFORE creating the scraper so page.setDefaultTimeout uses it.
+  // OTP flow can take up to MAX_OTP_ATTEMPTS (3) × OTP_USER_TIMEOUT_MS (180s) of user wait
+  // plus per-attempt processing — give it generous headroom.
+  const isHapoalim = scraperOptions.companyId === 'hapoalim';
+  // OneZero only triggers OTP on first login or after token expiry, but we still budget for
+  // a single 3-minute SMS wait. The scrape's global race promise enforces the real ceiling.
+  const isOneZero = scraperOptions.companyId === 'onezero';
+  const oneZeroNeedsOtp = isOneZero && !credentials?.otpLongTermToken;
+  let effectiveTimeout = scraperOptions.timeout || DEFAULT_SCRAPER_TIMEOUT;
+  if (isHapoalim) {
+    const otpExtraTimeout = 600000; // 10 min headroom for the OTP flow (3 attempts × 3 min + slack)
+    effectiveTimeout += otpExtraTimeout;
+    logger.info({ originalTimeout: scraperOptions.timeout, effectiveTimeout }, '[Scraper] Extended timeout for Hapoalim OTP');
+  } else if (oneZeroNeedsOtp) {
+    effectiveTimeout += 240000; // 4 min headroom for one SMS round-trip + slack
+    logger.info({ originalTimeout: scraperOptions.timeout, effectiveTimeout }, '[Scraper] Extended timeout for OneZero OTP');
+  }
+
   let options = {
     ...scraperOptions,
     startDate,
+    timeout: effectiveTimeout,
+    defaultTimeout: effectiveTimeout,
     preparePage: getPreparePage({
       companyId: scraperOptions.companyId,
-      timeout: scraperOptions.timeout,
+      timeout: effectiveTimeout,
       isRateLimited,
       logRequests,
       onProgress,
@@ -809,14 +880,19 @@ export async function runScraper(client, scraperOptions, credentials, onProgress
     // createScraper code: return new Scraper(options);
     scraper = new CustomVisaCalScraper(options);
   } else {
-    scraper = createScraper(options);
+    const libraryOptions = options.companyId === 'onezero'
+      ? { ...options, companyId: 'oneZero' }
+      : options;
+    scraper = createScraper(libraryOptions);
   }
 
-  if (scraper && typeof scraper.on === 'function') {
-    scraper.on('progress', (companyId, progress) => {
+  if (scraper && typeof scraper.onProgress === 'function') {
+    scraper.onProgress((companyId, progress) => {
       logger.debug({ companyId, progressType: progress?.type || 'unknown' }, '[Scraper] Progress event');
       if (onProgress) onProgress(companyId, progress);
     });
+  } else {
+    logger.warn('[Scraper] Could not register progress listener - onProgress not available');
   }
 
   // Monkey-patch terminate for smart scraping ONLY
@@ -829,12 +905,228 @@ export async function runScraper(client, scraperOptions, credentials, onProgress
     };
   }
 
+  // For Hapoalim: monkey-patch terminate to keep browser alive for OTP
+  if (isHapoalim && !useSmartScraping) {
+    originalTerminate = scraper.terminate.bind(scraper);
+    scraper.terminate = async () => {
+      logger.info('[Scraper] Prevented auto-termination for Hapoalim OTP handling');
+      return;
+    };
+  }
+
+  // OneZero: native 2FA wiring.
+  //   - When no long-term token exists, inject otpCodeRetriever that pipes through the
+  //     shared waitForOtp() promise store (same channel the existing UI submits to).
+  //   - Wrap getLongTermTwoFactorToken to capture the new long-term token and emit
+  //     otpSuccess/otpFailed progress events for the UI.
+  let capturedOneZeroToken = null;
+  let oneZeroOtpFailed = false;
+  if (oneZeroNeedsOtp) {
+    const ONEZERO_OTP_USER_TIMEOUT_MS = 180_000;
+    credentials = {
+      ...credentials,
+      otpCodeRetriever: async () => {
+        logger.info('[Scraper] OneZero OTP requested by scraper, awaiting user input');
+        if (onProgress) onProgress(scraperOptions.companyId, { type: 'otpRequired' });
+        try {
+          const code = await waitForOtp('onezero', ONEZERO_OTP_USER_TIMEOUT_MS);
+          if (onProgress) onProgress(scraperOptions.companyId, { type: 'otpSubmitting' });
+          return code;
+        } catch (err) {
+          logger.warn({ error: err.message }, '[Scraper] OneZero OTP wait failed/timed out');
+          if (onProgress) onProgress(scraperOptions.companyId, { type: 'otpFailed' });
+          oneZeroOtpFailed = true;
+          throw err;
+        }
+      }
+    };
+
+    if (typeof scraper.getLongTermTwoFactorToken === 'function') {
+      const originalGet = scraper.getLongTermTwoFactorToken.bind(scraper);
+      scraper.getLongTermTwoFactorToken = async (otpCode) => {
+        const tokenResult = await originalGet(otpCode);
+        if (tokenResult?.success && tokenResult.longTermTwoFactorAuthToken) {
+          capturedOneZeroToken = tokenResult.longTermTwoFactorAuthToken;
+          logger.info('[Scraper] OneZero captured long-term OTP token for persistence');
+          if (onProgress) onProgress(scraperOptions.companyId, { type: 'otpSuccess' });
+        } else {
+          logger.warn({ result: tokenResult }, '[Scraper] OneZero token exchange failed');
+          if (onProgress) onProgress(scraperOptions.companyId, { type: 'otpFailed' });
+          oneZeroOtpFailed = true;
+        }
+        return tokenResult;
+      };
+    }
+  }
+
+  // Capture provider non-2xx responses so the caller can classify failures
+  // even when the upstream library swallows the response (e.g. via destructuring
+  // a missing field on an error body).
+  const fetchInterceptor = installScrapeFetchInterceptor();
+
   logger.info('[Scraper] Starting scrape execution');
 
   // Wrap the entire scrape process in a global timeout
-  const globalTimeoutMs = options.timeout || DEFAULT_SCRAPER_TIMEOUT;
+  let globalTimeoutMs = options.timeout || DEFAULT_SCRAPER_TIMEOUT;
 
-  const scrapePromise = scraper.scrape(credentials);
+  // For Hapoalim with OTP, we need much more time (3 attempts × user wait + processing).
+  if (isHapoalim) {
+    globalTimeoutMs = Math.max(globalTimeoutMs, 720000); // 12 min ceiling — enough for 3 retries
+    logger.info({ globalTimeoutMs }, '[Scraper] Increased timeout for Hapoalim OTP flow');
+  }
+
+  // For Hapoalim, we wrap the scrape in OTP-aware logic
+  let scrapePromise;
+  if (isHapoalim) {
+    scrapePromise = (async () => {
+      logger.info('[Scraper] Hapoalim scrape starting with OTP-aware logic');
+      const result = await scraper.scrape(credentials);
+      logger.info({
+        success: result.success,
+        errorType: result.errorType,
+        errorMessage: result.errorMessage,
+        hasPage: !!scraper.page,
+      }, '[Scraper] Hapoalim scrape() returned');
+
+      // If scrape failed, check if we're on an OTP page
+      if (!result.success) {
+        // Check if the error is specifically about waiting for redirect (strong OTP indicator)
+        const isRedirectTimeout = result.errorMessage &&
+          result.errorMessage.includes('waiting for redirect');
+
+        if (isRedirectTimeout) {
+          logger.info('[Scraper] Hapoalim failed with redirect timeout - likely OTP page shown on same URL');
+        }
+
+        // Check page availability
+        const page = scraper.page;
+        if (!page) {
+          logger.warn('[Scraper] Hapoalim: No page available after failed login');
+        } else {
+          let pageClosed = false;
+          try {
+            pageClosed = page.isClosed();
+          } catch (e) {
+            logger.warn({ error: e.message }, '[Scraper] Failed to check page.isClosed()');
+          }
+
+          let pageUrl = 'UNKNOWN';
+          try {
+            pageUrl = pageClosed ? 'PAGE_CLOSED' : page.url();
+          } catch (e) {
+            logger.warn({ error: e.message }, '[Scraper] Failed to get page URL');
+          }
+
+          logger.info({
+            pageUrl,
+            pageClosed,
+            isRedirectTimeout
+          }, '[Scraper] Hapoalim page state after failed login');
+
+          if (!pageClosed) {
+            // Wait a moment for the page DOM to settle after the timeout
+            // The bank may still be rendering the OTP form
+            logger.info('[Scraper] Waiting 3s for page to settle before OTP detection...');
+            await new Promise(resolve => setTimeout(resolve, 3000));
+
+            // Take a screenshot for debugging (if possible)
+            try {
+              const screenshotPath = `/tmp/hapoalim_otp_debug_latest.png`;
+              await page.screenshot({ path: screenshotPath, fullPage: true });
+              logger.info({ screenshotPath }, '[Scraper] Debug screenshot saved');
+            } catch (e) {
+              logger.warn({ error: e.message }, '[Scraper] Failed to take debug screenshot');
+            }
+
+            const onOtpPage = await isOtpPage(page);
+            logger.info({ onOtpPage }, '[Scraper] OTP page detection result');
+
+            if (onOtpPage) {
+              logger.info('[Scraper] Hapoalim login landed on OTP page, initiating 2FA flow');
+
+              // Handle OTP with proper error catching to prevent retries on timeout
+              let otpSuccess = false;
+              let otpError = null;
+
+              try {
+                otpSuccess = await handleHapoalimOtp(page, onProgress);
+              } catch (e) {
+                otpError = e.message;
+                logger.warn({ error: e.message }, '[Scraper] OTP handling threw an error (likely timeout)');
+              }
+
+              if (otpSuccess) {
+                logger.info('[Scraper] OTP verification successful, fetching account data');
+
+                try {
+                  const data = await scraper.fetchData();
+                  if (data && data.accounts) {
+                    if (originalTerminate) {
+                      await originalTerminate.call(scraper, true);
+                      originalTerminate = null;
+                    }
+                    return { success: true, accounts: data.accounts };
+                  }
+                } catch (fetchError) {
+                  logger.error({ error: fetchError.message }, '[Scraper] Failed to fetch data after OTP');
+                  if (originalTerminate) {
+                    await originalTerminate.call(scraper, false);
+                    originalTerminate = null;
+                  }
+                  throw fetchError;
+                }
+              } else {
+                if (originalTerminate) {
+                  await originalTerminate.call(scraper, false);
+                  originalTerminate = null;
+                }
+                // Return with otpPending flag so retry loop knows not to retry
+                return {
+                  success: false,
+                  errorMessage: otpError || 'OTP verification failed or timed out',
+                  otpPending: true
+                };
+              }
+            } else if (isRedirectTimeout) {
+              // The redirect timed out but we couldn't detect OTP elements.
+              // This might still be an OTP page with unusual rendering.
+              // Log as much info as possible for debugging.
+              logger.warn('[Scraper] Redirect timeout but no OTP elements detected - possible false negative');
+              try {
+                const pageContent = await page.evaluate(() => ({
+                  title: document.title,
+                  bodyTextSnippet: (document.body?.innerText || '').substring(0, 500),
+                  htmlSnippet: (document.body?.innerHTML || '').substring(0, 1000),
+                  inputCount: document.querySelectorAll('input').length,
+                  buttonCount: document.querySelectorAll('button').length,
+                }));
+                logger.info(pageContent, '[Scraper] Page content dump for debugging');
+              } catch (e) {
+                logger.warn({ error: e.message }, '[Scraper] Failed to dump page content');
+              }
+            } else {
+              logger.info('[Scraper] Hapoalim failed but NOT on OTP page - normal login failure');
+            }
+          }
+        }
+      }
+
+      // Terminate normally if we prevented it
+      if (originalTerminate) {
+        try {
+          await originalTerminate.call(scraper, result.success);
+        } catch (e) {
+          logger.warn({ error: e.message }, '[Scraper] Error during deferred terminate');
+        }
+        originalTerminate = null;
+      }
+
+      return result;
+    })();
+  } else {
+    scrapePromise = scraper.scrape(credentials);
+  }
+
   let timeoutId;
   const timeoutPromise = new Promise((_, reject) => {
     timeoutId = setTimeout(() => {
@@ -846,7 +1138,7 @@ export async function runScraper(client, scraperOptions, credentials, onProgress
     // Race between the scrape process and the global timeout
     const result = await Promise.race([scrapePromise, timeoutPromise]);
     clearTimeout(timeoutId);
-    logger.info({ success: result?.success }, '[Scraper] Base scrape completed');
+    logger.info({ success: result?.success, errorType: result?.errorType, errorMessage: result?.errorMessage }, '[Scraper] Base scrape completed');
 
     if (result.success && result.accounts && !Array.isArray(result.accounts)) {
       result.accounts = [];
@@ -973,9 +1265,21 @@ export async function runScraper(client, scraperOptions, credentials, onProgress
     }
 
     clearActiveSession();
+    if (capturedOneZeroToken) {
+      result.persistentOtpToken = capturedOneZeroToken;
+    }
+    if (oneZeroOtpFailed && !result.success) {
+      // Mark so the run-stream retry loop doesn't re-trigger an SMS for the user.
+      result.otpPending = true;
+    }
+    if (fetchInterceptor.context.lastFailedResponse && !result.success) {
+      result.capturedResponse = fetchInterceptor.context.lastFailedResponse;
+    }
+    fetchInterceptor.restore();
     return result;
   } catch (err) {
     clearTimeout(timeoutId);
+    clearPendingOtp(); // Clean up any pending OTP request
     logger.error({
       error: err.message,
       stack: err.stack,
@@ -983,9 +1287,14 @@ export async function runScraper(client, scraperOptions, credentials, onProgress
       vendor: scraperOptions.companyId
     }, '[Scraper] Fatal error during scrape');
 
-    // Ensure we close if error happened during smart scrape
+    if (fetchInterceptor.context.lastFailedResponse) {
+      err.capturedResponse = fetchInterceptor.context.lastFailedResponse;
+    }
+
+    // Ensure we close if error happened during smart scrape or OTP
     if (originalTerminate) await originalTerminate();
     clearActiveSession();
+    fetchInterceptor.restore();
 
     throw err;
   }
@@ -1120,6 +1429,7 @@ export async function processScrapedAccounts({
   onTransactionProcessed = null,
   onAccountStarted = null
 }) {
+  /** @type {{ accounts: number; transactions: number; savedTransactions: number; duplicateTransactions: number; updatedTransactions: number; bankTransactions: number; cachedCategories: number; ruleCategories: number; scraperCategories: number; skippedCards: number; processedTransactions: any[] }} */
   const stats = {
     accounts: 0,
     transactions: 0,

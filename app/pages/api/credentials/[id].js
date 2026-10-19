@@ -1,4 +1,4 @@
-import { createApiHandler } from "../utils/apiHandler";
+import { createApiHandler } from "../../../utils/apiHandler";
 import { decrypt, encrypt, safeDecrypt } from "../utils/encryption";
 
 const ALLOWED_METHODS = ['DELETE', 'GET', 'PATCH', 'PUT'];
@@ -48,7 +48,7 @@ const innerHandler = createApiHandler({
 
     // PUT method - full account update
     if (req.method === 'PUT') {
-      const { vendor, username, password, id_number, card6_digits, nickname, bank_account_number } = req.body;
+      const { vendor, username, password, id_number, card6_digits, nickname, bank_account_number, phone_number } = req.body;
 
       // Build dynamic update query based on provided fields
       const updates = ['vendor = $2', 'nickname = $3', 'updated_at = CURRENT_TIMESTAMP'];
@@ -72,11 +72,17 @@ const innerHandler = createApiHandler({
       params.push(bank_account_number || null);
       paramIndex++;
 
-      // Only update password if provided (allows keeping existing password)
+      updates.push(`phone_number = $${paramIndex}`);
+      params.push(phone_number ? encrypt(phone_number) : null);
+      paramIndex++;
+
+      // Only update password if provided (allows keeping existing password).
+      // Password change invalidates any cached long-term OTP token — clear it so the user re-does 2FA.
       if (password) {
         updates.push(`password = $${paramIndex}`);
         params.push(encrypt(password));
         paramIndex++;
+        updates.push('otp_long_term_token = NULL');
       }
 
       return {
@@ -119,6 +125,9 @@ const innerHandler = createApiHandler({
         card6_digits: row.card6_digits ? safeDecrypt(row.card6_digits) : null,
         nickname: row.nickname,
         bank_account_number: row.bank_account_number,
+        phone_number: row.phone_number ? safeDecrypt(row.phone_number) : null,
+        // SECURITY: never return otp_long_term_token; expose only its presence
+        has_otp_long_term_token: !!row.otp_long_term_token,
         is_active: row.is_active !== false,
         created_at: row.created_at
       };
@@ -128,10 +137,24 @@ const innerHandler = createApiHandler({
   }
 });
 
+// If NUDLERS_API_KEY is set, GET (which returns the decrypted password) requires it
+// as an Authorization Bearer header. Otherwise, allow all requests (local-only mode).
+function verifyAuth(req) {
+  const requiredKey = process.env.NUDLERS_API_KEY;
+  if (!requiredKey) {
+    return true;
+  }
+  const authHeader = req.headers.authorization;
+  return !!(authHeader && authHeader.startsWith('Bearer ') && authHeader.slice(7) === requiredKey);
+}
+
 export default function handler(req, res) {
   if (!ALLOWED_METHODS.includes(req.method)) {
     res.setHeader('Allow', ALLOWED_METHODS);
     return res.status(405).json({ error: `Method ${req.method} not allowed` });
+  }
+  if (req.method === 'GET' && !verifyAuth(req)) {
+    return res.status(401).json({ error: 'Unauthorized' });
   }
   return innerHandler(req, res);
 }

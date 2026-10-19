@@ -1,39 +1,21 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTheme } from '@mui/material/styles';
 import Button from '@mui/material/Button';
 import LinearProgress from '@mui/material/LinearProgress';
 import CreditCardIcon from '@mui/icons-material/CreditCard';
-import RefreshIcon from '@mui/icons-material/Refresh';
-import DescriptionIcon from '@mui/icons-material/Description';
-import CalendarMonthIcon from '@mui/icons-material/CalendarMonth';
-import DateRangeIcon from '@mui/icons-material/DateRange';
 import TuneIcon from '@mui/icons-material/Tune';
-import SortIcon from '@mui/icons-material/Sort';
-import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
-import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import CheckIcon from '@mui/icons-material/Check';
-import CloseIcon from '@mui/icons-material/Close';
-import SettingsIcon from '@mui/icons-material/Settings';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
-import SearchIcon from '@mui/icons-material/Search';
 import SummarizeIcon from '@mui/icons-material/Summarize';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
-import EditIcon from '@mui/icons-material/Edit';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import { useAI } from '../context/AIContext';
 
 import CircularProgress from '@mui/material/CircularProgress';
 import IconButton from '@mui/material/IconButton';
 import TextField from '@mui/material/TextField';
-import Autocomplete from '@mui/material/Autocomplete';
-import Snackbar from '@mui/material/Snackbar';
-import Alert from '@mui/material/Alert';
 import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
-import Tooltip from '@mui/material/Tooltip';
-import Switch from '@mui/material/Switch';
-import FormControlLabel from '@mui/material/FormControlLabel';
-import Link from 'next/link';
 import PageHeader from './PageHeader';
 import Grid from '@mui/material/Grid';
 import Box from '@mui/material/Box';
@@ -46,13 +28,16 @@ import useMediaQuery from '@mui/material/useMediaQuery';
 import ExpensesModal from './CategoryDashboard/components/ExpensesModal';
 import Typography from '@mui/material/Typography';
 import { ModalData } from './CategoryDashboard/types';
-import { useCategories } from './CategoryDashboard/utils/useCategories';
 import { CardVendorIcon, CARD_VENDORS } from './CardVendorsModal';
 import { useScreenContext } from './Layout';
+import { useSnackbar } from './hooks/useSnackbar';
+import SnackbarFeedback from './SnackbarFeedback';
 import { useDateSelection, DateRangeMode } from '../context/DateSelectionContext';
 import { logger } from '../utils/client-logger';
 import { isBankTransaction, BankCheckTransaction } from '../utils/transactionUtils';
-import { CREDIT_CARD_VENDORS, BANK_VENDORS } from '../utils/constants';
+import { BANK_VENDORS } from '../utils/constants';
+import { useTranslation } from 'react-i18next';
+import { useLocale } from '../context/LocaleContext';
 
 // Maximum date range in years
 const MAX_YEARS_RANGE = 5;
@@ -119,7 +104,6 @@ interface Account {
   };
 }
 
-type GroupByType = 'vendor' | 'description' | 'last4digits';
 // DateRangeMode imported from context
 
 
@@ -129,8 +113,8 @@ type GroupByType = 'vendor' | 'description' | 'last4digits';
 // Helper to format date range for display
 
 
-const formatNumber = (num: number): string => {
-  return new Intl.NumberFormat('he-IL').format(Math.round(num));
+const formatNumber = (num: number, locale: string = 'he-IL'): string => {
+  return new Intl.NumberFormat(locale).format(Math.round(num));
 };
 
 
@@ -187,6 +171,10 @@ const MonthlySummary: React.FC = () => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const { openAI, setInitialPrompt } = useAI();
+  const { t } = useTranslation('views');
+  const { locale } = useLocale();
+  const localeTag = locale === 'he' ? 'he-IL' : 'en-US';
+  const fmt = (n: number) => formatNumber(n, localeTag);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -208,13 +196,9 @@ const MonthlySummary: React.FC = () => {
 
     if (!cardLast4 || isNaN(targetBankId)) return;
 
-    const cardOwnershipId = cardOwnershipMap[cardLast4];
-    if (!cardOwnershipId) {
-      setSnackbar({ open: true, message: 'Cannot move this card (System ID not found)', severity: 'error' });
-      return;
-    }
+    // No ownership row yet -> let the API create one from the card's last 4 digits
+    const cardOwnershipId = cardOwnershipMap[cardLast4] ?? `last4:${cardLast4}`;
 
-    // Optimistic update could go here, but for now let's rely on refresh
     try {
       const response = await fetch(`/api/cards/ownerships/${cardOwnershipId}`, {
         method: 'PATCH',
@@ -223,15 +207,15 @@ const MonthlySummary: React.FC = () => {
       });
 
       if (response.ok) {
-        setSnackbar({ open: true, message: 'Card moved successfully', severity: 'success' });
+        showSnackbar(t('summary.snackbarCardMoved'), 'success');
+        fetchCardVendors();
         fetchMonthlySummary(true);
-        // Also refresh vendors to update ownership map if needed, though ID shouldn't change
       } else {
-        setSnackbar({ open: true, message: 'Failed to move card', severity: 'error' });
+        showSnackbar(t('summary.snackbarFailedToMove'), 'error');
       }
     } catch (e) {
       logger.error('Move failed', e);
-      setSnackbar({ open: true, message: 'Move failed', severity: 'error' });
+      showSnackbar(t('summary.snackbarMoveFailed'), 'error');
     }
   };
 
@@ -250,14 +234,9 @@ const MonthlySummary: React.FC = () => {
   // Grouping
 
 
-  // Date range error (local validation for custom range UI feedback if needed, 
-  // though context handles valid start/end dates for fetching)
-  const [dateRangeError, setDateRangeError] = useState<string>('');
-
   // Modal for transaction details
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalData, setModalData] = useState<ModalData | undefined>();
-  const [loadingLast4, setLoadingLast4] = useState<string | null>(null);
 
   // Card summary for cards display (grouped by last 4 digits)
   const [cardSummary, setCardSummary] = useState<CardSummary[]>([]);
@@ -275,11 +254,7 @@ const MonthlySummary: React.FC = () => {
   // Category editing
 
 
-  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' }>({
-    open: false,
-    message: '',
-    severity: 'success'
-  });
+  const { snackbar, showSnackbar, hideSnackbar } = useSnackbar();
 
   // Card vendor selection
   const [vendorMenuAnchor, setVendorMenuAnchor] = useState<null | HTMLElement>(null);
@@ -305,7 +280,6 @@ const MonthlySummary: React.FC = () => {
     const endDateObj = new Date(end);
 
     if (startDateObj > endDateObj) {
-      setDateRangeError('Start date must be before end date');
       return false;
     }
 
@@ -313,11 +287,9 @@ const MonthlySummary: React.FC = () => {
     const diffYears = diffTime / (1000 * 60 * 60 * 24 * 365);
 
     if (diffYears > MAX_YEARS_RANGE) {
-      setDateRangeError(`Date range cannot exceed ${MAX_YEARS_RANGE} years`);
       return false;
     }
 
-    setDateRangeError('');
     return true;
   };
 
@@ -326,7 +298,7 @@ const MonthlySummary: React.FC = () => {
   const handleSaveBudget = async () => {
     const limit = parseFloat(newBudgetLimit);
     if (isNaN(limit) || limit <= 0) {
-      setSnackbar({ open: true, message: 'Please enter a valid budget amount', severity: 'error' });
+      showSnackbar(t('summary.snackbarInvalidBudget'), 'error');
       return;
     }
 
@@ -340,12 +312,12 @@ const MonthlySummary: React.FC = () => {
       if (res.ok) {
         setBudgetLimit(limit);
         setIsEditingBudget(false);
-        setSnackbar({ open: true, message: 'Budget updated successfully', severity: 'success' });
+        showSnackbar(t('summary.snackbarBudgetUpdated'), 'success');
       } else {
         throw new Error('Failed to save');
       }
-    } catch (e) {
-      setSnackbar({ open: true, message: 'Failed to update budget', severity: 'error' });
+    } catch (_e) {
+      showSnackbar(t('summary.snackbarFailedUpdateBudget'), 'error');
     }
   };
 
@@ -378,14 +350,8 @@ const MonthlySummary: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    // Initialize state from local storage and settings
+    // Initialize state from settings (date persistence is handled by DateSelectionContext)
     const init = async () => {
-      // Load persistence first
-      const persistedMode = localStorage.getItem('monthlySummary_mode') as DateRangeMode | null;
-      if (persistedMode && ['billing', 'calendar'].includes(persistedMode)) {
-        setDateRangeMode(persistedMode);
-      }
-
       // Fetch available dates and initialize selection
       fetchCardVendors();
 
@@ -404,7 +370,7 @@ const MonthlySummary: React.FC = () => {
     }
 
     init();
-  }, [fetchCardVendors, setDateRangeMode]);
+  }, [fetchCardVendors]);
 
 
 
@@ -442,12 +408,13 @@ const MonthlySummary: React.FC = () => {
           ...prev,
           [selectedCardForVendor]: vendorKey
         }));
-        setSnackbar({
-          open: true,
-          message: `Card •••• ${selectedCardForVendor} set to ${CARD_VENDORS[vendorKey as keyof typeof CARD_VENDORS]?.name || vendorKey}`,
-          severity: 'success'
-        });
-        // Trigger refresh for other components
+        showSnackbar(
+          t('summary.snackbarCardVendorSet', {
+            last4: selectedCardForVendor,
+            vendor: CARD_VENDORS[vendorKey as keyof typeof CARD_VENDORS]?.name || vendorKey
+          }),
+          'success'
+        );
         window.dispatchEvent(new CustomEvent('cardVendorsUpdated'));
       }
     } catch (error) {
@@ -455,11 +422,7 @@ const MonthlySummary: React.FC = () => {
         card: selectedCardForVendor,
         vendor: vendorKey
       });
-      setSnackbar({
-        open: true,
-        message: 'Failed to save card vendor',
-        severity: 'error'
-      });
+      showSnackbar(t('summary.snackbarFailedSaveVendor'), 'error');
     }
 
     handleVendorMenuClose();
@@ -484,11 +447,12 @@ const MonthlySummary: React.FC = () => {
           ...prev,
           [last4digits]: nickname
         }));
-        setSnackbar({
-          open: true,
-          message: nickname ? `Card nickname set to "${nickname}"` : 'Card nickname removed',
-          severity: 'success'
-        });
+        showSnackbar(
+          nickname
+            ? t('summary.snackbarNicknameSet', { nickname })
+            : t('summary.snackbarNicknameRemoved'),
+          'success'
+        );
         window.dispatchEvent(new CustomEvent('cardVendorsUpdated'));
       }
     } catch (error) {
@@ -496,23 +460,24 @@ const MonthlySummary: React.FC = () => {
         card: last4digits,
         nickname
       });
-      setSnackbar({
-        open: true,
-        message: 'Failed to save card nickname',
-        severity: 'error'
-      });
+      showSnackbar(t('summary.snackbarFailedSaveNickname'), 'error');
     }
   };
 
   // fetchAvailableMonths removed
 
-  const fetchMonthlySummary = useCallback(async (skipLoadingState = false, offsetValue = 0) => {
+  // Incrementing request id — responses from superseded fetches are ignored
+  const summaryRequestIdRef = useRef(0);
+
+  const fetchMonthlySummary = useCallback(async (skipLoadingState = false, _offsetValue = 0) => {
     // For custom mode, we need custom dates; for other modes, we need year/month
     if (dateRangeMode === 'custom') {
       if (!customStartDate || !customEndDate) return;
     } else {
       if (!selectedYear || !selectedMonth) return;
     }
+
+    const requestId = ++summaryRequestIdRef.current;
 
     // Preserve scroll position when refetching due to filter toggle
     const scrollY = window.scrollY;
@@ -547,7 +512,9 @@ const MonthlySummary: React.FC = () => {
       ]);
 
       if (accountsResponse.ok) {
-        setAccounts(await accountsResponse.json());
+        const accountsData = await accountsResponse.json();
+        if (requestId !== summaryRequestIdRef.current) return; // stale response
+        setAccounts(accountsData);
       }
 
       if (cardResponse.ok) {
@@ -570,6 +537,7 @@ const MonthlySummary: React.FC = () => {
           balance_updated_at?: string | null;
         }
         const cardResponseData = await cardResponse.json();
+        if (requestId !== summaryRequestIdRef.current) return; // stale response
         const cardResult: CardAPIResponse[] = cardResponseData.items || [];
         // Filter to include cards with expenses OR bank activity
         const cards: CardSummary[] = cardResult
@@ -633,7 +601,7 @@ const MonthlySummary: React.FC = () => {
             if (!scrapedBankMap.has(key)) {
               scrapedBankMap.set(key, {
                 bank_account_id: item.bank_account_id || null,
-                bank_account_nickname: item.bank_account_nickname || item.card_nickname || transVendor || 'Unknown Bank',
+                bank_account_nickname: item.bank_account_nickname || item.card_nickname || transVendor || t('summary.unknownBank'),
                 bank_account_number: item.bank_account_number || item.last4digits,
                 bank_account_vendor: transVendor,
                 net_flow: 0,
@@ -657,7 +625,7 @@ const MonthlySummary: React.FC = () => {
           if (isCC) {
             // It's a card with expenses. Attribute to its linked bank.
             let bankKey = 'unassigned';
-            let bankName = 'Unassigned Cards';
+            let bankName = t('summary.unassignedCards');
             let bankId: number | null = null;
             let bankVendor: string | null = null;
             let bankNumber: string | null = null;
@@ -665,13 +633,13 @@ const MonthlySummary: React.FC = () => {
             if (item.bank_account_id) {
               bankKey = `id-${item.bank_account_id}`;
               bankId = item.bank_account_id;
-              bankName = item.bank_account_nickname || 'Unknown Bank';
+              bankName = item.bank_account_nickname || t('summary.unknownBank');
               bankVendor = item.bank_account_vendor || null;
               bankNumber = item.bank_account_number || null;
             } else if (item.custom_bank_account_nickname || item.custom_bank_account_number) {
               // Custom bank
               bankKey = `custom-${item.custom_bank_account_nickname || item.custom_bank_account_number}`;
-              bankName = item.custom_bank_account_nickname || 'Custom Bank';
+              bankName = item.custom_bank_account_nickname || t('summary.customBank');
               bankNumber = item.custom_bank_account_number || null;
             } else {
               // If it's unassigned, we might still want to show it under "Unassigned" or similar?
@@ -702,7 +670,7 @@ const MonthlySummary: React.FC = () => {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
-      if (!skipLoadingState) {
+      if (!skipLoadingState && requestId === summaryRequestIdRef.current) {
         setLoading(false);
       }
 
@@ -711,7 +679,7 @@ const MonthlySummary: React.FC = () => {
         window.scrollTo(0, scrollY);
       });
     }
-  }, [startDate, endDate, billingCycle, dateRangeMode, customStartDate, customEndDate, selectedYear, selectedMonth]);
+  }, [startDate, endDate, billingCycle, dateRangeMode, customStartDate, customEndDate, selectedYear, selectedMonth, t]);
 
   // Derived bank summary that includes ALL accounts from the REST API
   const finalBankSummary = useMemo(() => {
@@ -758,6 +726,7 @@ const MonthlySummary: React.FC = () => {
     } else if (startDate && endDate) {
       fetchMonthlySummary(false, 0);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchMonthlySummary is stable; including it would cause re-runs
   }, [startDate, endDate, billingCycle, dateRangeMode, customStartDate, customEndDate, selectedYear, selectedMonth]);
 
   // Separate useEffect for filter toggle - skip loading state to prevent flicker
@@ -783,9 +752,7 @@ const MonthlySummary: React.FC = () => {
   };
 
   const handleMonthChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    const newMonth = event.target.value;
-    setSelectedMonth(newMonth);
-    localStorage.setItem('monthlySummary_month', newMonth);
+    setSelectedMonth(event.target.value);
   };
 
   const handleCustomDateChange = (type: 'start' | 'end', value: string) => {
@@ -815,8 +782,6 @@ const MonthlySummary: React.FC = () => {
 
 
 
-  const [loadingAll, setLoadingAll] = useState(false);
-
   const handleAllTransactionsClick = async () => {
     if (dateRangeMode === 'custom') {
       if (!customStartDate || !customEndDate) return;
@@ -825,8 +790,6 @@ const MonthlySummary: React.FC = () => {
     }
 
     try {
-      setLoadingAll(true);
-
       let url: string;
       if (billingCycle) {
         url = `/api/transactions?billingCycle=${billingCycle}`;
@@ -845,14 +808,13 @@ const MonthlySummary: React.FC = () => {
       const cardTransactions = transactions.filter((t: BankCheckTransaction) => !isBankTransaction(t));
 
       setModalData({
-        type: 'All Card Expenses',
-        data: cardTransactions
+        type: t('summary.modalTitleAllCardExpenses'),
+        data: cardTransactions,
+        isBank: false
       });
       setIsModalOpen(true);
     } catch (err) {
       logger.error('Error fetching all transactions', err);
-    } finally {
-      setLoadingAll(false);
     }
   };
 
@@ -868,61 +830,6 @@ const MonthlySummary: React.FC = () => {
 
 
 
-
-  const handleBankAccountClick = async (bank: ScrapedBankSummary) => {
-    if (dateRangeMode === 'custom') {
-      if (!customStartDate || !customEndDate) return;
-    } else {
-      if (!selectedYear || !selectedMonth) return;
-    }
-
-    try {
-      setLoading(true);
-
-      const params = new URLSearchParams();
-
-      if (dateRangeMode === 'custom') {
-        params.set('startDate', customStartDate);
-        params.set('endDate', customEndDate);
-      } else if (dateRangeMode === 'billing') {
-        params.set('billingCycle', `${selectedYear}-${selectedMonth}`);
-      } else {
-        params.set('startDate', startDate);
-        params.set('endDate', endDate);
-      }
-
-      if (bank.bank_account_id) {
-        params.set('bankAccountId', String(bank.bank_account_id));
-        if (bank.bank_account_number) {
-          params.set('bankAccountNumber', bank.bank_account_number);
-        }
-      } else {
-        params.set('bankVendor', bank.bank_account_vendor || 'Other');
-      }
-
-      const url = `/api/transactions?${params.toString()}`;
-
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error('Failed to fetch transactions');
-      }
-
-      const transactions = await response.json();
-
-      // Filter: Show ONLY bank transactions (scraped from bank)
-      const bankTransactions = transactions.filter((t: BankCheckTransaction) => isBankTransaction(t));
-
-      setModalData({
-        type: `${bank.bank_account_nickname} (Bank Activity)`,
-        data: bankTransactions
-      });
-      setIsModalOpen(true);
-    } catch (err) {
-      logger.error('Error fetching bank transactions', err);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleBankCCClick = async (bank: BankCCSummary) => {
     if (dateRangeMode === 'custom') {
@@ -978,8 +885,9 @@ const MonthlySummary: React.FC = () => {
       }
 
       setModalData({
-        type: `Cards linked to ${bank.bank_account_nickname}`,
-        data: ccTransactions
+        type: t('summary.modalTitleCardsLinkedTo', { name: bank.bank_account_nickname }),
+        data: ccTransactions,
+        isBank: false
       });
       setIsModalOpen(true);
     } catch (err) {
@@ -997,8 +905,6 @@ const MonthlySummary: React.FC = () => {
     }
 
     try {
-      setLoadingLast4(last4digits);
-
       let url: string;
       if (dateRangeMode === 'custom') {
         url = `/api/transactions?startDate=${customStartDate}&endDate=${customEndDate}&last4digits=${encodeURIComponent(last4digits)}`;
@@ -1022,14 +928,15 @@ const MonthlySummary: React.FC = () => {
         cardInfo?.bank_account_vendor && BANK_VENDORS.includes(cardInfo.bank_account_vendor) && !cardInfo.card_vendor;
 
       setModalData({
-        type: isBank ? `Account ending in ${last4digits}` : `Card ending in ${last4digits}`,
-        data: transactions
+        type: isBank
+          ? t('summary.modalTitleAccountEnding', { last4: last4digits })
+          : t('summary.modalTitleCardEnding', { last4: last4digits }),
+        data: transactions,
+        isBank: !!isBank
       });
       setIsModalOpen(true);
     } catch (err) {
       logger.error('Error fetching transactions by last4', err);
-    } finally {
-      setLoadingLast4(null);
     }
   };
 
@@ -1083,25 +990,25 @@ const MonthlySummary: React.FC = () => {
   // Update document title and data
   useEffect(() => {
     if (dateRangeMode === 'custom' && customStartDate && customEndDate) {
-      const start = new Date(customStartDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      const end = new Date(customEndDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      document.title = `Nudlers | ${start} - ${end}`;
+      const start = new Date(customStartDate).toLocaleDateString(localeTag, { month: 'short', day: 'numeric' });
+      const end = new Date(customEndDate).toLocaleDateString(localeTag, { month: 'short', day: 'numeric', year: 'numeric' });
+      document.title = t('summary.documentTitleRange', { start, end });
     } else if (selectedMonth && selectedYear) {
-      const monthName = new Date(parseInt(selectedYear), parseInt(selectedMonth) - 1, 1).toLocaleDateString('en-US', { month: 'long' });
-      document.title = `Nudlers | ${monthName} ${selectedYear}`;
+      const monthName = new Date(parseInt(selectedYear), parseInt(selectedMonth) - 1, 1).toLocaleDateString(localeTag, { month: 'long' });
+      document.title = t('summary.documentTitleMonth', { month: monthName, year: selectedYear });
     } else {
-      document.title = 'Nudlers | Summary';
+      document.title = t('summary.documentTitleSummary');
     }
-  }, [selectedMonth, selectedYear, dateRangeMode, customStartDate, customEndDate]);
+  }, [selectedMonth, selectedYear, dateRangeMode, customStartDate, customEndDate, localeTag, t]);
 
   if (error) {
     return (
       <div style={{
         textAlign: 'center',
         padding: '64px',
-        color: '#ef4444'
+        color: 'var(--n-error)'
       }}>
-        Error: {error}
+        {t('summary.errorPrefix', { message: error })}
       </div>
     );
   }
@@ -1114,8 +1021,6 @@ const MonthlySummary: React.FC = () => {
       overflow: 'hidden'
     }}>
       {/* Background elements removed - handled by Layout.tsx */}
-
-
       {/* Main content container */}
       <Box sx={{
         padding: { xs: '12px 8px', sm: '16px 12px', md: '24px 16px' },
@@ -1126,13 +1031,15 @@ const MonthlySummary: React.FC = () => {
         color: theme.palette.text.primary
       }}>
         <PageHeader
-          title="Summary"
+          title={t('summary.title')}
           description={
             dateRangeMode === 'custom' && customStartDate && customEndDate
-              ? `${new Date(customStartDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${new Date(customEndDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+              ? `${new Date(customStartDate).toLocaleDateString(localeTag, { month: 'short', day: 'numeric' })} - ${new Date(customEndDate).toLocaleDateString(localeTag, { month: 'short', day: 'numeric', year: 'numeric' })}`
               : (selectedMonth && selectedYear
-                ? `Summary for ${new Date(parseInt(selectedYear), parseInt(selectedMonth) - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`
-                : 'Track and analyze your expenses')
+                ? t('summary.descriptionForMonth', {
+                    month: new Date(parseInt(selectedYear), parseInt(selectedMonth) - 1, 1).toLocaleDateString(localeTag, { month: 'long', year: 'numeric' })
+                  })
+                : t('summary.descriptionTrack'))
           }
           icon={<SummarizeIcon sx={{ fontSize: '32px', color: '#ffffff' }} />}
 
@@ -1162,7 +1069,7 @@ const MonthlySummary: React.FC = () => {
             alignItems: 'center',
             minHeight: '300px'
           }}>
-            <CircularProgress size={60} style={{ color: '#3b82f6' }} />
+            <CircularProgress size={60} style={{ color: 'var(--n-info)' }} />
           </div>
         ) : (
           <>
@@ -1199,7 +1106,7 @@ const MonthlySummary: React.FC = () => {
                 }}
               >
                 <Typography variant="overline" sx={{ color: 'text.secondary', fontWeight: 700, letterSpacing: '0.1em', fontSize: '0.65rem' }}>
-                  Total Card Spend
+                  {t('summary.totalCardSpend')}
                 </Typography>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mt: 0.5, mb: 1.5 }}>
                   <Box sx={{
@@ -1218,7 +1125,7 @@ const MonthlySummary: React.FC = () => {
                   </Box>
                   <Box>
                     <Typography variant="h4" sx={{ fontWeight: 800, color: 'text.primary', letterSpacing: '-0.02em', fontSize: { lg: '1.75rem' } }}>
-                      ₪{formatNumber(totals.card_expenses)}
+                      ₪{fmt(totals.card_expenses)}
                     </Typography>
 
                     {/* Budget Comparison */}
@@ -1228,7 +1135,7 @@ const MonthlySummary: React.FC = () => {
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }} onClick={e => e.stopPropagation()}>
                             <TextField
                               size="small"
-                              placeholder="Set Budget..."
+                              placeholder={t('summary.setBudgetPlaceholder')}
                               value={newBudgetLimit}
                               onChange={(e) => setNewBudgetLimit(e.target.value)}
                               autoFocus
@@ -1238,7 +1145,7 @@ const MonthlySummary: React.FC = () => {
                                 '& .MuiInputBase-root': { bgcolor: theme.palette.background.paper, fontSize: '0.8125rem' }
                               }}
                             />
-                            <IconButton size="small" onClick={handleSaveBudget} sx={{ color: '#10b981', p: 0.5 }}>
+                            <IconButton size="small" onClick={handleSaveBudget} sx={{ color: 'var(--n-success)', p: 0.5 }}>
                               <CheckIcon fontSize="small" />
                             </IconButton>
                           </Box>
@@ -1254,19 +1161,19 @@ const MonthlySummary: React.FC = () => {
                                   flex: 1,
                                   bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)',
                                   '& .MuiLinearProgress-bar': {
-                                    bgcolor: totals.card_expenses > budgetLimit ? '#ef4444' : '#10b981'
+                                    bgcolor: totals.card_expenses > budgetLimit ? 'var(--n-error)' : 'var(--n-success)'
                                   }
                                 }}
                               />
-                              <Typography variant="caption" sx={{ fontWeight: 700, color: totals.card_expenses > budgetLimit ? '#ef4444' : '#10b981', fontSize: '0.65rem' }}>
+                              <Typography variant="caption" sx={{ fontWeight: 700, color: totals.card_expenses > budgetLimit ? 'var(--n-error)' : 'var(--n-success)', fontSize: '0.65rem' }}>
                                 {Math.round((totals.card_expenses / budgetLimit) * 100)}%
                               </Typography>
                             </Box>
                             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                               <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', fontSize: '0.65rem' }}>
                                 {totals.card_expenses > budgetLimit
-                                  ? `Over by ₪${formatNumber(totals.card_expenses - budgetLimit)}`
-                                  : `₪${formatNumber(budgetLimit - totals.card_expenses)} left`
+                                  ? t('summary.overBy', { amount: `₪${fmt(totals.card_expenses - budgetLimit)}` })
+                                  : t('summary.remainingLeft', { amount: `₪${fmt(budgetLimit - totals.card_expenses)}` })
                                 }
                               </Typography>
                             </Box>
@@ -1281,7 +1188,7 @@ const MonthlySummary: React.FC = () => {
                             }}
                             sx={{ fontSize: '0.65rem', py: 0.25, borderRadius: '12px' }}
                           >
-                            Set Budget
+                            {t('summary.setBudget')}
                           </Button>
                         )}
                       </Box>
@@ -1294,14 +1201,14 @@ const MonthlySummary: React.FC = () => {
                     endIcon={<ChevronRightIcon sx={{ fontSize: 14 }} />}
                     sx={{ width: 'fit-content', borderRadius: '12px', textTransform: 'none', fontWeight: 700, fontSize: '0.7rem', py: 0 }}
                   >
-                    All Transactions
+                    {t('summary.allTransactions')}
                   </Button>
                   <Button
                     size="small"
                     startIcon={<AutoAwesomeIcon sx={{ fontSize: 14 }} />}
                     onClick={(e) => {
                       e.stopPropagation();
-                      setInitialPrompt("Analyze my spending trends for this month compared to the previous one");
+                      setInitialPrompt(t('summary.analyzePrompt'));
                       openAI();
                     }}
                     sx={{
@@ -1320,7 +1227,7 @@ const MonthlySummary: React.FC = () => {
                     }}
                     variant="outlined"
                   >
-                    Analyze
+                    {t('summary.analyze')}
                   </Button>
                 </Box>
               </Box>
@@ -1334,7 +1241,7 @@ const MonthlySummary: React.FC = () => {
               {/* Right Section: Card Breakdown Grid (Grouped by Bank) */}
               <Box sx={{ flex: 1 }}>
                 <Typography variant="subtitle2" sx={{ color: 'text.secondary', fontWeight: 600, mb: 2 }}>
-                  Credit Card Usage by Bank
+                  {t('summary.creditCardUsageByBank')}
                 </Typography>
                 <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
                   <Box sx={{
@@ -1348,11 +1255,9 @@ const MonthlySummary: React.FC = () => {
                     alignItems: 'start'
                   }}>
                     {creditCardBankSummary.map((bank) => {
-                      const percentage = totals.card_expenses > 0
+                      const _percentage = totals.card_expenses > 0
                         ? Math.round((bank.total_cc_expenses / totals.card_expenses) * 100)
                         : 0;
-
-                      const isLargeBank = bank.card_count > 3;
 
                       const BankContent = (
                         <Box
@@ -1367,11 +1272,6 @@ const MonthlySummary: React.FC = () => {
                             display: 'flex',
                             flexDirection: 'column',
                             transition: 'all 0.3s',
-                            gridColumn: {
-                              xs: 'span 1',
-                              sm: (isLargeBank && !isMobile) ? 'span 2' : 'span 1',
-                              lg: (isLargeBank && !isMobile) ? 'span 2' : 'span 1'
-                            },
                             '&:hover': {
                               boxShadow: '0 12px 24px -10px rgba(0, 0, 0, 0.1)',
                               bgcolor: theme.palette.mode === 'dark' ? 'rgba(30, 41, 59, 0.6)' : 'rgba(255, 255, 255, 1)',
@@ -1423,7 +1323,7 @@ const MonthlySummary: React.FC = () => {
                                         {bank.bank_account_nickname}
                                       </Typography>
                                       <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 500, fontSize: '0.625rem' }}>
-                                        Linked Bank
+                                        {t('summary.linkedBank')}
                                       </Typography>
                                     </Box>
                                   </Box>
@@ -1447,7 +1347,7 @@ const MonthlySummary: React.FC = () => {
                                             color: balance >= 0 ? '#10B981' : '#F43F5E'
                                           }}
                                         >
-                                          ₪{formatNumber(balance)}
+                                          ₪{fmt(balance)}
                                         </Typography>
                                         <ChevronRightIcon sx={{ fontSize: 14, color: 'text.secondary', opacity: 0.7 }} />
                                       </Box>
@@ -1462,22 +1362,14 @@ const MonthlySummary: React.FC = () => {
                           <Box sx={{ p: 1.5, pt: 1 }}>
                             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', mb: 1 }}>
                               <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary', textTransform: 'uppercase', letterSpacing: '0.05em', fontSize: '0.625rem' }}>
-                                {bank.card_count} Cards
+                                {t('summary.cardsCount', { count: bank.card_count })}
                               </Typography>
                               <Typography variant="subtitle1" sx={{ fontWeight: 800, fontSize: '0.9rem' }}>
-                                ₪{formatNumber(bank.total_cc_expenses)}
+                                ₪{fmt(bank.total_cc_expenses)}
                               </Typography>
                             </Box>
 
-                            <Box sx={{
-                              display: 'grid',
-                              gridTemplateColumns: {
-                                xs: '1fr',
-                                sm: '1fr',
-                                lg: (isLargeBank && !isMobile) ? 'repeat(2, 1fr)' : '1fr'
-                              },
-                              gap: 1
-                            }}>
+                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                               {cardSummary
                                 .filter(card => {
                                   const cardTransVendor = card.transaction_vendor;
@@ -1580,7 +1472,7 @@ const MonthlySummary: React.FC = () => {
 
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0, ml: 1 }}>
                                           <Typography variant="caption" sx={{ fontWeight: 800, fontSize: '0.75rem' }}>
-                                            ₪{formatNumber(card.card_expenses)}
+                                            ₪{fmt(card.card_expenses)}
                                           </Typography>
 
                                           <IconButton
@@ -1638,27 +1530,29 @@ const MonthlySummary: React.FC = () => {
               anchorEl={vendorMenuAnchor}
               open={Boolean(vendorMenuAnchor)}
               onClose={handleVendorMenuClose}
-              PaperProps={{
-                sx: {
-                  borderRadius: '16px',
-                  boxShadow: '0 8px 32px rgba(0, 0, 0, 0.15)',
-                  minWidth: '240px',
-                  maxHeight: '500px',
-                  background: theme.palette.mode === 'dark' ? 'rgba(30, 41, 59, 0.95)' : undefined,
-                  backdropFilter: 'blur(10px)',
-                  border: `1px solid ${theme.palette.divider}`
+              slotProps={{
+                paper: {
+                  sx: {
+                    borderRadius: '16px',
+                    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.15)',
+                    minWidth: '240px',
+                    maxHeight: '500px',
+                    background: theme.palette.mode === 'dark' ? 'rgba(30, 41, 59, 0.95)' : undefined,
+                    backdropFilter: 'blur(10px)',
+                    border: `1px solid ${theme.palette.divider}`
+                  }
                 }
               }}
             >
               {/* Nickname Field */}
               <Box sx={{ px: 2, py: 1.5, borderBottom: `1px solid ${theme.palette.divider}` }}>
                 <span style={{ fontSize: '12px', color: 'text.secondary', fontWeight: 600, textTransform: 'uppercase', display: 'block', marginBottom: '8px' }}>
-                  Card Nickname
+                  {t('summary.cardNickname')}
                 </span>
                 <TextField
                   size="small"
                   fullWidth
-                  placeholder="e.g., My Personal Card"
+                  placeholder={t('summary.cardNicknamePlaceholder')}
                   value={editingNickname}
                   onChange={(e) => setEditingNickname(e.target.value)}
                   onKeyDown={(e) => {
@@ -1668,22 +1562,6 @@ const MonthlySummary: React.FC = () => {
                     e.stopPropagation();
                   }}
                   onClick={(e) => e.stopPropagation()}
-                  InputProps={{
-                    endAdornment: editingNickname !== (cardNicknameMap[selectedCardForVendor || ''] || '') && (
-                      <IconButton
-                        size="small"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (selectedCardForVendor) {
-                            handleNicknameSave(selectedCardForVendor, editingNickname);
-                          }
-                        }}
-                        sx={{ color: '#10b981' }}
-                      >
-                        <CheckIcon sx={{ fontSize: '18px' }} />
-                      </IconButton>
-                    )
-                  }}
                   sx={{
                     '& .MuiOutlinedInput-root': {
                       borderRadius: '10px',
@@ -1691,12 +1569,30 @@ const MonthlySummary: React.FC = () => {
                       color: 'text.primary'
                     }
                   }}
+                  slotProps={{
+                    input: {
+                      endAdornment: editingNickname !== (cardNicknameMap[selectedCardForVendor || ''] || '') && (
+                        <IconButton
+                          size="small"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (selectedCardForVendor) {
+                              handleNicknameSave(selectedCardForVendor, editingNickname);
+                            }
+                          }}
+                          sx={{ color: 'var(--n-success)' }}
+                        >
+                          <CheckIcon sx={{ fontSize: '18px' }} />
+                        </IconButton>
+                      )
+                    }
+                  }}
                 />
               </Box>
 
               <Box sx={{ px: 2, py: 1, borderBottom: `1px solid ${theme.palette.divider}` }}>
                 <span style={{ fontSize: '12px', color: 'text.secondary', fontWeight: 600, textTransform: 'uppercase' }}>
-                  Card Vendor
+                  {t('summary.cardVendor')}
                 </span>
               </Box>
               {Object.entries(CARD_VENDORS).map(([key, config]) => (
@@ -1716,7 +1612,7 @@ const MonthlySummary: React.FC = () => {
                   <CardVendorIcon vendor={key} size={32} />
                   <span style={{ fontWeight: 500, color: theme.palette.text.primary }}>{config.name}</span>
                   {cardVendorMap[selectedCardForVendor || ''] === key && (
-                    <CheckIcon sx={{ fontSize: '18px', color: '#10b981', ml: 'auto' }} />
+                    <CheckIcon sx={{ fontSize: '18px', color: 'var(--n-success)', ml: 'auto' }} />
                   )}
                 </MenuItem>
               ))}
@@ -1731,7 +1627,11 @@ const MonthlySummary: React.FC = () => {
             }}>
               <Grid container spacing={3}>
                 {/* Left Side: Budget Module */}
-                <Grid item xs={12} md={6}>
+                <Grid
+                  size={{
+                    xs: 12,
+                    md: 6
+                  }}>
                   <BudgetModule onViewTransactions={async (category) => {
                     try {
                       let queryParams = `category=${encodeURIComponent(category)}`;
@@ -1747,8 +1647,9 @@ const MonthlySummary: React.FC = () => {
                       if (response.ok) {
                         const results = await response.json();
                         setModalData({
-                          type: `Category: ${category}`,
-                          data: results
+                          type: t('summary.modalTitleCategory', { name: category }),
+                          data: results,
+                          isBank: false
                         });
                         setIsModalOpen(true);
                       }
@@ -1759,7 +1660,11 @@ const MonthlySummary: React.FC = () => {
                 </Grid>
 
                 {/* Right Side: Recent Transactions Module */}
-                <Grid item xs={12} md={6}>
+                <Grid
+                  size={{
+                    xs: 12,
+                    md: 6
+                  }}>
                   <RecentTransactionsModule />
                 </Grid>
               </Grid>
@@ -1780,24 +1685,17 @@ const MonthlySummary: React.FC = () => {
           />
         )}
 
-        <Snackbar
-          open={snackbar.open}
+        <SnackbarFeedback
+          snackbar={snackbar}
+          onClose={hideSnackbar}
           autoHideDuration={5000}
-          onClose={() => setSnackbar({ ...snackbar, open: false })}
           anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-        >
-          <Alert
-            onClose={() => setSnackbar({ ...snackbar, open: false })}
-            severity={snackbar.severity}
-            sx={{
-              width: "100%",
-              borderRadius: "12px",
-              boxShadow: "0 4px 20px rgba(0, 0, 0, 0.15)"
-            }}
-          >
-            {snackbar.message}
-          </Alert>
-        </Snackbar>
+          alertSx={{
+            width: "100%",
+            borderRadius: "12px",
+            boxShadow: "0 4px 20px rgba(0, 0, 0, 0.15)"
+          }}
+        />
       </Box>
     </div >
   );

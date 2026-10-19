@@ -19,6 +19,8 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import ModalHeader from './ModalHeader';
 import dynamic from 'next/dynamic';
 import { ScrapeReportTransaction } from './ScrapeReport';
+import { useTranslation } from 'react-i18next';
+import { useLocale } from '../context/LocaleContext';
 const ScrapeReport = dynamic(() => import('./ScrapeReport'), { ssr: false });
 
 interface SyncReport {
@@ -27,7 +29,7 @@ interface SyncReport {
 }
 
 interface SyncHistoryModalProps {
-    isOpen: boolean;
+    open: boolean;
     onClose: () => void;
 }
 
@@ -42,8 +44,11 @@ interface SyncEvent {
     duration_seconds?: number;
 }
 
-export default function SyncHistoryModal({ isOpen, onClose }: SyncHistoryModalProps) {
+export default function SyncHistoryModal({ open, onClose }: SyncHistoryModalProps) {
     const theme = useTheme();
+    const { t } = useTranslation(['sync', 'common']);
+    const { locale } = useLocale();
+    const dateLocale = locale === 'he' ? 'he-IL' : 'en-US';
     const [loading, setLoading] = useState(false);
     const [events, setEvents] = useState<SyncEvent[]>([]);
     const [selectedEvent, setSelectedEvent] = useState<SyncEvent | null>(null);
@@ -66,11 +71,12 @@ export default function SyncHistoryModal({ isOpen, onClose }: SyncHistoryModalPr
     };
 
     useEffect(() => {
-        if (isOpen) {
+        if (!open) return;
+        queueMicrotask(() => {
             fetchEvents();
             setSelectedEvent(null);
-        }
-    }, [isOpen]);
+        });
+    }, [open]);
 
     const handleSelectEvent = async (event: SyncEvent) => {
         setSelectedEvent(event);
@@ -98,32 +104,34 @@ export default function SyncHistoryModal({ isOpen, onClose }: SyncHistoryModalPr
 
     const getStatusIcon = (status: string) => {
         if (status === 'success') return <CheckCircleIcon sx={{ color: '#22c55e', fontSize: 20 }} />;
-        if (status === 'error') return <ErrorIcon sx={{ color: '#ef4444', fontSize: 20 }} />;
+        if (status === 'error') return <ErrorIcon sx={{ color: 'var(--n-error)', fontSize: 20 }} />;
         return <CircularProgress size={20} />;
     };
 
     return (
         <Dialog
-            open={isOpen}
+            open={open}
             onClose={onClose}
             maxWidth="md"
             fullWidth
-            PaperProps={{
-                style: {
-                    backgroundColor: theme.palette.mode === 'dark' ? theme.palette.background.paper : '#ffffff',
-                    borderRadius: '24px',
-                    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)',
-                    height: '80vh',
-                    backgroundImage: theme.palette.mode === 'dark' ? 'linear-gradient(rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.05))' : 'none',
+            slotProps={{
+                paper: {
+                    style: {
+                        backgroundColor: theme.palette.mode === 'dark' ? theme.palette.background.paper : '#ffffff',
+                        borderRadius: '24px',
+                        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)',
+                        height: '80vh',
+                        backgroundImage: theme.palette.mode === 'dark' ? 'linear-gradient(rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.05))' : 'none',
+                    }
                 }
             }}
         >
             <ModalHeader
-                title={selectedEvent ? "Sync Details" : "Sync History"}
+                title={selectedEvent ? t('sync:historyModal.detailsTitle') : t('sync:historyModal.title')}
                 onClose={onClose}
                 startAction={selectedEvent ? (
                     <Button onClick={handleBack} startIcon={<ArrowBackIcon />} sx={{ mr: 1, minWidth: 'auto' }}>
-                        Back
+                        {t('sync:historyModal.back')}
                     </Button>
                 ) : undefined}
             />
@@ -134,7 +142,7 @@ export default function SyncHistoryModal({ isOpen, onClose }: SyncHistoryModalPr
                             <Box>
                                 <Typography variant="h6" sx={{ fontWeight: 600 }}>{selectedEvent.vendor}</Typography>
                                 <Typography variant="caption" sx={{ color: theme.palette.text.secondary }}>
-                                    {new Date(selectedEvent.created_at).toLocaleString()}
+                                    {new Date(selectedEvent.created_at).toLocaleString(dateLocale)}
                                 </Typography>
                             </Box>
                             <Chip
@@ -148,7 +156,7 @@ export default function SyncHistoryModal({ isOpen, onClose }: SyncHistoryModalPr
                         {reportLoading ? (
                             <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', p: 8, gap: 2 }}>
                                 <CircularProgress size={40} />
-                                <Typography variant="body2" sx={{ color: 'text.secondary' }}>Loading detailed report...</Typography>
+                                <Typography variant="body2" sx={{ color: 'text.secondary' }}>{t('sync:historyModal.loadingReport')}</Typography>
                             </Box>
                         ) : selectedEvent.report_json ? (
                             <ScrapeReport
@@ -160,7 +168,7 @@ export default function SyncHistoryModal({ isOpen, onClose }: SyncHistoryModalPr
                             />
                         ) : (
                             <Box sx={{ p: 4, textAlign: 'center', bgcolor: theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.05)' : '#f9fafb', borderRadius: 2 }}>
-                                <Typography variant="body1" sx={{ color: theme.palette.text.primary }}>No detailed report available for this sync.</Typography>
+                                <Typography variant="body1" sx={{ color: theme.palette.text.primary }}>{t('sync:historyModal.noReport')}</Typography>
                                 <Typography variant="caption" sx={{ color: theme.palette.text.secondary, mt: 1, display: 'block' }}>
                                     {selectedEvent.message}
                                 </Typography>
@@ -175,7 +183,7 @@ export default function SyncHistoryModal({ isOpen, onClose }: SyncHistoryModalPr
                             </Box>
                         ) : events.length === 0 ? (
                             <Box sx={{ textAlign: 'center', p: 4 }}>
-                                <Typography variant="body2" sx={{ color: '#9ca3af' }}>No sync history found.</Typography>
+                                <Typography variant="body2" sx={{ color: '#9ca3af' }}>{t('sync:historyModal.empty')}</Typography>
                             </Box>
                         ) : (
                             <List>
@@ -201,7 +209,7 @@ export default function SyncHistoryModal({ isOpen, onClose }: SyncHistoryModalPr
                                                             {event.vendor}
                                                         </Typography>
                                                         <Typography variant="caption" sx={{ color: '#9ca3af' }}>
-                                                            via {event.triggered_by || 'manual'}
+                                                            {t('sync:historyModal.via', { source: event.triggered_by || t('sync:historyModal.manual') })}
                                                         </Typography>
                                                     </Box>
                                                 }

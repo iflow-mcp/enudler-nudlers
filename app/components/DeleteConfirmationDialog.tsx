@@ -9,8 +9,9 @@ import Typography from '@mui/material/Typography';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import DeleteIcon from '@mui/icons-material/Delete';
 import CloseIcon from '@mui/icons-material/Close';
-import { formatNumber } from './CategoryDashboard/utils/formatUtils';
+import { formatNumber } from './CategoryDashboard/utils/format';
 import { dateUtils } from './CategoryDashboard/utils/dateUtils';
+import { useTranslation } from 'react-i18next';
 
 interface Transaction {
     name: string;
@@ -33,6 +34,7 @@ const DeleteConfirmationDialog: React.FC<DeleteConfirmationDialogProps> = ({
     onConfirm,
     transaction
 }) => {
+    const { t } = useTranslation('misc');
     if (!transaction) return null;
 
     const handleConfirm = () => {
@@ -46,29 +48,31 @@ const DeleteConfirmationDialog: React.FC<DeleteConfirmationDialogProps> = ({
             onClose={onClose}
             maxWidth="sm"
             fullWidth
-            PaperProps={{
-                sx: {
-                    borderRadius: '24px',
-                    padding: '8px',
-                    background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.98) 100%)',
-                    backdropFilter: 'blur(20px)',
-                    boxShadow: '0 24px 64px rgba(239, 68, 68, 0.2)',
-                    border: '1px solid rgba(239, 68, 68, 0.2)',
+            slotProps={{
+                backdrop: {
+                    style: {
+                        backgroundColor: 'rgba(0, 0, 0, 0.4)',
+                        backdropFilter: 'blur(8px)'
+                    }
+                },
+
+                paper: {
+                    sx: {
+                        borderRadius: '24px',
+                        padding: '8px',
+                        background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.98) 100%)',
+                        backdropFilter: 'blur(20px)',
+                        boxShadow: '0 24px 64px rgba(239, 68, 68, 0.2)',
+                        border: '1px solid rgba(239, 68, 68, 0.2)',
+                    }
                 }
-            }}
-            BackdropProps={{
-                style: {
-                    backgroundColor: 'rgba(0, 0, 0, 0.4)',
-                    backdropFilter: 'blur(8px)'
-                }
-            }}
-        >
+            }}>
             <DialogTitle sx={{
                 display: 'flex',
                 alignItems: 'center',
                 gap: '12px',
                 fontWeight: 700,
-                color: '#ef4444',
+                color: 'var(--n-error)',
                 paddingBottom: '8px'
             }}>
                 <Box sx={{
@@ -83,9 +87,8 @@ const DeleteConfirmationDialog: React.FC<DeleteConfirmationDialogProps> = ({
                 }}>
                     <WarningAmberIcon sx={{ color: '#fff', fontSize: '28px' }} />
                 </Box>
-                Delete Transaction?
+                {t('deleteConfirm.title')}
             </DialogTitle>
-
             <DialogContent>
                 <Box sx={{
                     marginTop: '16px',
@@ -100,7 +103,7 @@ const DeleteConfirmationDialog: React.FC<DeleteConfirmationDialogProps> = ({
                         marginBottom: '16px',
                         fontWeight: 500
                     }}>
-                        Are you sure you want to delete this transaction? This action cannot be undone.
+                        {t('deleteConfirm.prompt')}
                     </Typography>
 
                     <Box sx={{
@@ -114,7 +117,7 @@ const DeleteConfirmationDialog: React.FC<DeleteConfirmationDialogProps> = ({
                     }}>
                         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <Typography sx={{ fontSize: '13px', color: '#64748b', fontWeight: 600 }}>
-                                Description:
+                                {t('deleteConfirm.fields.description')}
                             </Typography>
                             <Typography sx={{ fontSize: '14px', color: '#1e293b', fontWeight: 600 }}>
                                 {transaction.name}
@@ -123,11 +126,11 @@ const DeleteConfirmationDialog: React.FC<DeleteConfirmationDialogProps> = ({
 
                         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <Typography sx={{ fontSize: '13px', color: '#64748b', fontWeight: 600 }}>
-                                Amount:
+                                {t('deleteConfirm.fields.amount')}
                             </Typography>
                             <Typography sx={{
                                 fontSize: '16px',
-                                color: transaction.price < 0 ? '#ef4444' : '#10b981',
+                                color: transaction.price < 0 ? 'var(--n-error)' : 'var(--n-success)',
                                 fontWeight: 700
                             }}>
                                 ₪{formatNumber(Math.abs(transaction.price))}
@@ -136,7 +139,7 @@ const DeleteConfirmationDialog: React.FC<DeleteConfirmationDialogProps> = ({
 
                         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <Typography sx={{ fontSize: '13px', color: '#64748b', fontWeight: 600 }}>
-                                Date:
+                                {t('deleteConfirm.fields.date')}
                             </Typography>
                             <Typography sx={{ fontSize: '14px', color: '#1e293b', fontWeight: 600 }}>
                                 {dateUtils.formatDate(transaction.date)}
@@ -146,11 +149,11 @@ const DeleteConfirmationDialog: React.FC<DeleteConfirmationDialogProps> = ({
                         {transaction.category && (
                             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <Typography sx={{ fontSize: '13px', color: '#64748b', fontWeight: 600 }}>
-                                    Category:
+                                    {t('deleteConfirm.fields.category')}
                                 </Typography>
                                 <Typography sx={{
                                     fontSize: '13px',
-                                    color: '#3b82f6',
+                                    color: 'var(--n-info)',
                                     fontWeight: 600,
                                     backgroundColor: 'rgba(59, 130, 246, 0.1)',
                                     padding: '4px 10px',
@@ -163,7 +166,6 @@ const DeleteConfirmationDialog: React.FC<DeleteConfirmationDialogProps> = ({
                     </Box>
                 </Box>
             </DialogContent>
-
             <DialogActions sx={{ padding: '16px 24px', gap: '12px' }}>
                 <Button
                     onClick={onClose}
@@ -181,7 +183,7 @@ const DeleteConfirmationDialog: React.FC<DeleteConfirmationDialogProps> = ({
                         }
                     }}
                 >
-                    Cancel
+                    {t('common:actions.cancel')}
                 </Button>
                 <Button
                     onClick={handleConfirm}
@@ -200,7 +202,7 @@ const DeleteConfirmationDialog: React.FC<DeleteConfirmationDialogProps> = ({
                         }
                     }}
                 >
-                    Delete Transaction
+                    {t('deleteConfirm.deleteButton')}
                 </Button>
             </DialogActions>
         </Dialog>

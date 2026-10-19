@@ -133,7 +133,7 @@ export const StatusProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                 setIsDbConnected(false);
                 setDbError(true);
             }
-        } catch (error) {
+        } catch (_error) {
             setIsDbConnected(false);
             setDbError(true);
         } finally {
@@ -163,7 +163,7 @@ export const StatusProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                 const data = await response.json();
                 // Filter out non-sync events from history if they exist
                 if (data.history) {
-                    data.history = data.history.filter((e: any) => e.vendor !== 'whatsapp_summary');
+                    data.history = data.history.filter((e: { vendor: string }) => e.vendor !== 'whatsapp_summary');
                 }
                 setSyncStatus(data);
             }
@@ -185,7 +185,13 @@ export const StatusProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             const data = await response.json();
             if (response.ok) {
                 setIsVaultLocked(false);
-                refreshStatus(true);
+                // Wait for any in-progress refresh to finish, then fetch fresh status
+                const waitForRefresh = () => new Promise<void>(resolve => {
+                    const check = () => isRefreshing.current ? setTimeout(check, 50) : resolve();
+                    check();
+                });
+                await waitForRefresh();
+                await refreshStatus(true);
                 return { success: true };
             }
             return { success: false, error: data.error || 'Failed to unlock vault' };
@@ -392,11 +398,16 @@ export const StatusProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setIsFullPolling(full);
     }, []);
 
+    // Initial checks on mount only (deferred to avoid sync setState in effect)
     useEffect(() => {
-        // Initial checks
-        checkDb();
-        refreshStatus();
+        queueMicrotask(() => {
+            checkDb();
+            refreshStatus();
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only kick; the polling effect below handles subsequent refreshes
+    }, []);
 
+    useEffect(() => {
         let dbIntervalId: NodeJS.Timeout;
         let syncIntervalId: NodeJS.Timeout;
 

@@ -33,7 +33,7 @@ import FlashOnIcon from '@mui/icons-material/FlashOn';
 import CheckIcon from '@mui/icons-material/Check';
 import SkipNextIcon from '@mui/icons-material/SkipNext';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
-import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
+import HelpOutlineIcon from '@mui/icons-material/HelpOutlineOutlined';
 import SearchIcon from '@mui/icons-material/Search';
 import { useCategoryColors } from '../utils/categoryUtils';
 import ModalHeader from '../../ModalHeader';
@@ -48,6 +48,8 @@ import LinearProgress from '@mui/material/LinearProgress';
 import InputAdornment from '@mui/material/InputAdornment';
 import Badge from '@mui/material/Badge';
 import { logger } from '../../../utils/client-logger';
+import { useTranslation } from 'react-i18next';
+import { useLocale } from '../../../context/LocaleContext';
 
 interface Category {
   name: string;
@@ -127,6 +129,9 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
   const [newMappingTarget, setNewMappingTarget] = useState('');
   const categoryColors = useCategoryColors();
   const theme = useTheme();
+  const { t } = useTranslation(['categoryMgmt', 'common']);
+  const { locale } = useLocale();
+  const dateLocale = locale === 'he' ? 'he-IL' : 'en-US';
 
   // Quick Categorize state
   const [uncategorizedDescriptions, setUncategorizedDescriptions] = useState<UncategorizedDescription[]>([]);
@@ -139,27 +144,31 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
   const [newQuickCategoryInput, setNewQuickCategoryInput] = useState('');
   const [showNewQuickCategoryInput, setShowNewQuickCategoryInput] = useState(false);
 
+  /* eslint-disable react-hooks/immutability, react-hooks/exhaustive-deps -- fetchers are declared below; closures capture them at runtime which works correctly since effects run after render */
   useEffect(() => {
-    if (open) {
+    if (!open) return;
+    queueMicrotask(() => {
       fetchCategories();
       fetchRules();
       fetchUncategorizedDescriptions();
       fetchMappings();
-    }
+    });
   }, [open]);
 
   // Reset quick categorize state when switching tabs
   useEffect(() => {
-    if (currentTab === 3 && uncategorizedDescriptions.length > 0) {
+    if (currentTab !== 3 || uncategorizedDescriptions.length === 0) return;
+    queueMicrotask(() => {
       fetchQuickTransactions(uncategorizedDescriptions[currentQuickIndex]?.description);
-    }
+    });
   }, [currentTab, currentQuickIndex, uncategorizedDescriptions]);
+  /* eslint-enable react-hooks/immutability, react-hooks/exhaustive-deps */
 
   const fetchUncategorizedDescriptions = async () => {
     try {
       setIsLoadingQuick(true);
       const response = await fetch('/api/categories/uncategorized');
-      if (!response.ok) throw new Error('Failed to fetch uncategorized descriptions');
+      if (!response.ok) throw new Error(t('categoryMgmt:errors.failedToFetchUncategorized'));
       const data = await response.json();
       setUncategorizedDescriptions(data);
       setCurrentQuickIndex(0);
@@ -181,7 +190,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
       const response = await fetch(
         `/api/transactions?description=${encodeURIComponent(description)}&uncategorizedOnly=true`
       );
-      if (!response.ok) throw new Error('Failed to fetch transactions');
+      if (!response.ok) throw new Error(t('categoryMgmt:errors.failedToFetchTransactions'));
       const data = await response.json();
       setQuickTransactions(data);
     } catch (error) {
@@ -214,14 +223,14 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
         const contentType = response.headers.get('content-type');
         if (contentType && contentType.includes('application/json')) {
           const errorData = await response.json();
-          throw new Error(errorData.error || 'Failed to update category');
+          throw new Error(errorData.error || t('categoryMgmt:errors.failedToUpdateCategory'));
         } else {
-          throw new Error(`Failed to update category: ${response.status} ${response.statusText}`);
+          throw new Error(`${t('categoryMgmt:errors.failedToUpdateCategory')}: ${response.status} ${response.statusText}`);
         }
       }
 
       const result = await response.json();
-      setSuccess(`Updated ${result.transactionsUpdated} transaction(s) to "${category}"`);
+      setSuccess(t('categoryMgmt:success.quickUpdated', { count: result.transactionsUpdated, category }));
       setTotalQuickProcessed(prev => prev + 1);
 
       // Move to next description
@@ -236,7 +245,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
         description: currentDescription.description,
         newCategory: category
       });
-      setError(error instanceof Error ? error.message : 'Failed to update category');
+      setError(error instanceof Error ? error.message : t('categoryMgmt:errors.failedToUpdateCategory'));
     } finally {
       setIsSavingQuick(false);
     }
@@ -262,7 +271,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
   };
 
   const formatQuickCurrency = (amount: number) => {
-    return new Intl.NumberFormat('he-IL', {
+    return new Intl.NumberFormat(dateLocale, {
       style: 'currency',
       currency: 'ILS',
       minimumFractionDigits: 0,
@@ -272,7 +281,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
 
   const formatQuickDate = (dateString: string) => {
     const date = new Date(dateString);
-    return date.toLocaleDateString('he-IL', {
+    return date.toLocaleDateString(dateLocale, {
       day: '2-digit',
       month: '2-digit',
       year: '2-digit'
@@ -283,41 +292,19 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
     try {
       setIsLoading(true);
       setError(null);
-      const response = await fetch('/api/categories');
+      const response = await fetch('/api/categories?withCounts=true');
       if (!response.ok) {
         const errorText = await response.text().catch(() => 'Unknown error');
         const errorMessage = `Failed to fetch categories: ${response.status} ${response.statusText}${errorText ? ` - ${errorText}` : ''}`;
         throw new Error(errorMessage);
       }
 
-      const categoryNames = await response.json();
-
-      // Get transaction counts for each category
-      const categoriesWithCounts = await Promise.all(
-        categoryNames.map(async (name: string) => {
-          try {
-            const countResponse = await fetch(`/api/transactions?category=${encodeURIComponent(name)}`);
-            if (!countResponse.ok) {
-              logger.warn(`Failed to fetch count for category "${name}": ${countResponse.status}`);
-              return { name, count: 0 };
-            }
-            const transactions = await countResponse.json();
-            return {
-              name,
-              count: Array.isArray(transactions) ? transactions.length : 0
-            };
-          } catch (err) {
-            logger.warn(`Error fetching count for category "${name}": ${err instanceof Error ? err.message : 'Unknown error'}`);
-            return { name, count: 0 };
-          }
-        })
-      );
-
-      setCategories(categoriesWithCounts.sort((a, b) => a.name.localeCompare(b.name, 'he')));
+      const categoriesWithCounts: Category[] = await response.json();
+      setCategories(categoriesWithCounts.sort((a, b) => a.name.localeCompare(b.name, locale)));
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      const errorMessage = error instanceof Error ? error.message : t('categoryMgmt:errors.unknown');
       logger.error('Error fetching categories', undefined, { errorMessage });
-      setError(`Failed to load categories: ${errorMessage}`);
+      setError(t('categoryMgmt:errors.loadCategories', { message: errorMessage }));
     } finally {
       setIsLoading(false);
     }
@@ -327,13 +314,13 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
     try {
       setIsLoadingRules(true);
       const response = await fetch('/api/categories/rules');
-      if (!response.ok) throw new Error('Failed to fetch rules');
+      if (!response.ok) throw new Error(t('categoryMgmt:errors.failedToFetchRules'));
 
       const rulesData = await response.json();
       setRules(rulesData);
     } catch (error) {
       logger.error('Error fetching rules', error);
-      setError('Failed to load rules');
+      setError(t('categoryMgmt:errors.loadRules'));
     } finally {
       setIsLoadingRules(false);
     }
@@ -343,13 +330,13 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
     try {
       setIsLoadingMappings(true);
       const response = await fetch('/api/categories/mappings');
-      if (!response.ok) throw new Error('Failed to fetch mappings');
+      if (!response.ok) throw new Error(t('categoryMgmt:errors.failedToFetchMappings'));
 
       const data = await response.json();
       setMappings(data);
     } catch (error) {
       logger.error('Error fetching mappings', error);
-      setError('Failed to load category mappings');
+      setError(t('categoryMgmt:errors.loadMappings'));
     } finally {
       setIsLoadingMappings(false);
     }
@@ -369,15 +356,15 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
       });
 
       if (!response.ok) {
-        throw new Error('Failed to delete mapping');
+        throw new Error(t('categoryMgmt:errors.failedToDeleteMapping'));
       }
 
-      setSuccess('Mapping removed successfully');
+      setSuccess(t('categoryMgmt:success.mappingRemoved'));
       await fetchMappings();
 
       setTimeout(() => setSuccess(null), 3000);
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Failed to delete mapping');
+      setError(error instanceof Error ? error.message : t('categoryMgmt:errors.failedToDeleteMapping'));
     } finally {
       setIsLoading(false);
     }
@@ -402,17 +389,17 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
       });
 
       if (!response.ok) {
-        throw new Error('Failed to update mapping');
+        throw new Error(t('categoryMgmt:errors.failedToUpdateMapping'));
       }
 
-      setSuccess('Mapping updated successfully');
+      setSuccess(t('categoryMgmt:success.mappingUpdated'));
       setEditingMapping(null);
       setEditMappingTarget('');
       await fetchMappings();
 
       setTimeout(() => setSuccess(null), 3000);
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Failed to update mapping');
+      setError(error instanceof Error ? error.message : t('categoryMgmt:errors.failedToUpdateMapping'));
     } finally {
       setIsLoading(false);
     }
@@ -437,10 +424,10 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
       });
 
       if (!response.ok) {
-        throw new Error('Failed to create mapping');
+        throw new Error(t('categoryMgmt:errors.failedToCreateMapping'));
       }
 
-      setSuccess('Mapping created successfully');
+      setSuccess(t('categoryMgmt:success.mappingCreated'));
       setNewMappingSource('');
       setNewMappingTarget('');
       await fetchMappings();
@@ -448,7 +435,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
       setTimeout(() => setSuccess(null), 3000);
     } catch (error) {
       logger.error('Error creating mapping', error);
-      setError(error instanceof Error ? error.message : 'Failed to create mapping');
+      setError(error instanceof Error ? error.message : t('categoryMgmt:errors.failedToCreateMapping'));
     } finally {
       setIsLoading(false);
     }
@@ -464,12 +451,12 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
 
   const handleMerge = async () => {
     if (selectedCategories.length < 2) {
-      setError('Please select at least 2 categories to merge');
+      setError(t('categoryMgmt:errors.selectAtLeastTwo'));
       return;
     }
 
     if (!newCategoryName.trim()) {
-      setError('Please enter a name for the new merged category');
+      setError(t('categoryMgmt:errors.enterMergedName'));
       return;
     }
 
@@ -493,13 +480,13 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
         const contentType = response.headers.get('content-type');
         if (contentType && contentType.includes('application/json')) {
           const errorData = await response.json();
-          throw new Error(errorData.error || 'Failed to merge categories');
+          throw new Error(errorData.error || t('categoryMgmt:errors.failedToMerge'));
         } else {
-          throw new Error(`Failed to merge categories: ${response.status} ${response.statusText}`);
+          throw new Error(`${t('categoryMgmt:errors.failedToMerge')}: ${response.status} ${response.statusText}`);
         }
       }
 
-      setSuccess(`Successfully merged ${selectedCategories.length} categories into "${newCategoryName}"`);
+      setSuccess(t('categoryMgmt:success.merged', { count: selectedCategories.length, name: newCategoryName }));
       setSelectedCategories([]);
       setNewCategoryName('');
 
@@ -517,7 +504,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
         categories: selectedCategories,
         targetName: newCategoryName
       });
-      setError(error instanceof Error ? error.message : 'Failed to merge categories');
+      setError(error instanceof Error ? error.message : t('categoryMgmt:errors.failedToMerge'));
     } finally {
       setIsLoading(false);
     }
@@ -553,12 +540,12 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
 
   const handleRenameCategory = async () => {
     if (!renamingCategory || !renameNewName.trim()) {
-      setError('Please enter a new category name');
+      setError(t('categoryMgmt:errors.enterNewName'));
       return;
     }
 
     if (renamingCategory === renameNewName.trim()) {
-      setError('New category name must be different from the current name');
+      setError(t('categoryMgmt:errors.newNameDifferent'));
       return;
     }
 
@@ -580,14 +567,14 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
         const contentType = response.headers.get('content-type');
         if (contentType && contentType.includes('application/json')) {
           const errorData = await response.json();
-          throw new Error(errorData.error || 'Failed to rename category');
+          throw new Error(errorData.error || t('categoryMgmt:errors.failedToRename'));
         } else {
-          throw new Error(`Failed to rename category: ${response.status} ${response.statusText}`);
+          throw new Error(`${t('categoryMgmt:errors.failedToRename')}: ${response.status} ${response.statusText}`);
         }
       }
 
       const result = await response.json();
-      setSuccess(`Successfully renamed "${renamingCategory}" to "${renameNewName.trim()}" (${result.transactionsUpdated} transactions updated)`);
+      setSuccess(t('categoryMgmt:success.renamed', { oldName: renamingCategory, newName: renameNewName.trim(), count: result.transactionsUpdated }));
       setRenamingCategory(null);
       setRenameNewName('');
 
@@ -604,7 +591,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
         oldName: renamingCategory,
         newName: renameNewName.trim()
       });
-      setError(error instanceof Error ? error.message : 'Failed to rename category');
+      setError(error instanceof Error ? error.message : t('categoryMgmt:errors.failedToRename'));
     } finally {
       setIsLoading(false);
     }
@@ -634,14 +621,14 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
         const contentType = response.headers.get('content-type');
         if (contentType && contentType.includes('application/json')) {
           const errorData = await response.json();
-          throw new Error(errorData.error || 'Failed to delete category');
+          throw new Error(errorData.error || t('categoryMgmt:errors.failedToDeleteCategory'));
         } else {
-          throw new Error(`Failed to delete category: ${response.status} ${response.statusText}`);
+          throw new Error(`${t('categoryMgmt:errors.failedToDeleteCategory')}: ${response.status} ${response.statusText}`);
         }
       }
 
       const result = await response.json();
-      setSuccess(`Successfully deleted "${deletingCategory}" (${result.transactionsUncategorized} transactions uncategorized)`);
+      setSuccess(t('categoryMgmt:success.deletedCategory', { name: deletingCategory, count: result.transactionsUncategorized }));
       setDeletingCategory(null);
 
       // Refresh categories list
@@ -656,7 +643,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
       logger.error('Error deleting category', error, {
         category: deletingCategory
       });
-      setError(error instanceof Error ? error.message : 'Failed to delete category');
+      setError(error instanceof Error ? error.message : t('categoryMgmt:errors.failedToDeleteCategory'));
     } finally {
       setIsLoading(false);
     }
@@ -664,7 +651,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
 
   const handleCreateRule = async () => {
     if (!newRule.name_pattern.trim() || !newRule.target_category.trim()) {
-      setError('Please enter both pattern and category');
+      setError(t('categoryMgmt:errors.patternAndCategory'));
       return;
     }
 
@@ -684,13 +671,13 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
         const contentType = response.headers.get('content-type');
         if (contentType && contentType.includes('application/json')) {
           const errorData = await response.json();
-          throw new Error(errorData.error || 'Failed to create rule');
+          throw new Error(errorData.error || t('categoryMgmt:errors.failedToCreateRule'));
         } else {
-          throw new Error(`Failed to create rule: ${response.status} ${response.statusText}`);
+          throw new Error(`${t('categoryMgmt:errors.failedToCreateRule')}: ${response.status} ${response.statusText}`);
         }
       }
 
-      setSuccess('Rule created successfully');
+      setSuccess(t('categoryMgmt:success.ruleCreated'));
       setNewRule({ name_pattern: '', target_category: '' });
       await fetchRules();
 
@@ -700,7 +687,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
         category: newRule.target_category,
         pattern: newRule.name_pattern
       });
-      setError(error instanceof Error ? error.message : 'Failed to create rule');
+      setError(error instanceof Error ? error.message : t('categoryMgmt:errors.failedToCreateRule'));
     } finally {
       setIsLoading(false);
     }
@@ -729,14 +716,14 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
         }
       }
 
-      setSuccess('Rule updated successfully');
+      setSuccess(t('categoryMgmt:success.ruleUpdated'));
       setEditingRule(null);
       await fetchRules();
 
       setTimeout(() => setSuccess(null), 3000);
     } catch (error) {
       logger.error('Error updating rule', error, { ruleId: rule.id });
-      setError(error instanceof Error ? error.message : 'Failed to update rule');
+      setError(error instanceof Error ? error.message : t('categoryMgmt:errors.failedToUpdateRule'));
     } finally {
       setIsLoading(false);
     }
@@ -765,13 +752,13 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
         }
       }
 
-      setSuccess('Rule deleted successfully');
+      setSuccess(t('categoryMgmt:success.ruleDeleted'));
       await fetchRules();
 
       setTimeout(() => setSuccess(null), 3000);
     } catch (error) {
       logger.error('Error deleting rule', error, { ruleId });
-      setError(error instanceof Error ? error.message : 'Failed to delete rule');
+      setError(error instanceof Error ? error.message : t('categoryMgmt:errors.failedToDeleteRule'));
     } finally {
       setIsLoading(false);
     }
@@ -800,7 +787,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
       }
 
       const result = await response.json();
-      setSuccess(`Successfully applied ${result.rulesApplied} rules to ${result.transactionsUpdated} transactions`);
+      setSuccess(t('categoryMgmt:success.rulesApplied', { rules: result.rulesApplied, transactions: result.transactionsUpdated }));
 
       // Refresh categories and notify parent
       await fetchCategories();
@@ -809,7 +796,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
       setTimeout(() => setSuccess(null), 5000);
     } catch (error) {
       logger.error('Error applying rules', error);
-      setError(error instanceof Error ? error.message : 'Failed to apply rules');
+      setError(error instanceof Error ? error.message : t('categoryMgmt:errors.failedToApplyRules'));
     } finally {
       setIsApplyingRules(false);
     }
@@ -821,19 +808,20 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
       onClose={handleClose}
       maxWidth="md"
       fullWidth
-      PaperProps={{
-        style: {
-          background: theme.palette.mode === 'dark'
-            ? 'linear-gradient(135deg, var(--modal-backdrop) 0%, var(--modal-backdrop-alt) 100%)'
-            : 'var(--modal-backdrop)',
-          borderRadius: '24px',
-          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)',
-          border: `1px solid ${theme.palette.divider}`
+      slotProps={{
+        paper: {
+          style: {
+            background: theme.palette.mode === 'dark'
+              ? 'linear-gradient(135deg, var(--modal-backdrop) 0%, var(--modal-backdrop-alt) 100%)'
+              : 'var(--modal-backdrop)',
+            borderRadius: '24px',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)',
+            border: `1px solid ${theme.palette.divider}`
+          }
         }
       }}
     >
-      <ModalHeader title="Category Management" onClose={handleClose} />
-
+      <ModalHeader title={t('categoryMgmt:modal.title')} onClose={handleClose} />
       <DialogContent style={{ padding: '0 24px 24px 24px' }}>
         {error && (
           <Alert severity="error" style={{ marginBottom: '16px' }}>
@@ -852,9 +840,9 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
           onChange={(e, newValue) => setCurrentTab(newValue)}
           style={{ marginBottom: '24px' }}
         >
-          <Tab label="Categories" />
-          <Tab label="Rules" />
-          <Tab label="Mappings" />
+          <Tab label={t('categoryMgmt:tabs.categories')} />
+          <Tab label={t('categoryMgmt:tabs.rules')} />
+          <Tab label={t('categoryMgmt:tabs.mappings')} />
           <Tab
             label={
               <Badge
@@ -871,8 +859,8 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                 }}
               >
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <FlashOnIcon sx={{ fontSize: 18, color: uncategorizedDescriptions.length > 0 ? '#f59e0b' : 'inherit' }} />
-                  Uncategorized
+                  <FlashOnIcon sx={{ fontSize: 18, color: uncategorizedDescriptions.length > 0 ? 'var(--n-warning)' : 'inherit' }} />
+                  {t('categoryMgmt:tabs.uncategorized')}
                 </Box>
               </Badge>
             }
@@ -884,7 +872,11 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
             {/* Top Row: Selected Categories + Merge Form */}
             <Grid container spacing={2} sx={{ mb: 2 }}>
               {/* Selected Categories - Compact */}
-              <Grid item xs={12} md={6}>
+              <Grid
+                size={{
+                  xs: 12,
+                  md: 6
+                }}>
                 <Box
                   sx={{
                     background: theme.palette.mode === 'dark'
@@ -892,7 +884,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                       : 'linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, rgba(147, 51, 234, 0.05) 100%)',
                     borderRadius: '12px',
                     padding: '16px',
-                    border: `2px dashed ${selectedCategories.length >= 2 ? '#3b82f6' : theme.palette.divider}`,
+                    border: `2px dashed ${selectedCategories.length >= 2 ? 'var(--n-info)' : theme.palette.divider}`,
                     minHeight: '120px',
                     display: 'flex',
                     flexDirection: 'column',
@@ -900,15 +892,22 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                   }}
                 >
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                    <MergeIcon sx={{ color: '#3b82f6', fontSize: 20 }} />
+                    <MergeIcon sx={{ color: 'var(--n-info)', fontSize: 20 }} />
                     <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                      Selected to Merge ({selectedCategories.length})
+                      {t('categoryMgmt:categories.selectedToMerge', { count: selectedCategories.length })}
                     </Typography>
                   </Box>
 
                   {selectedCategories.length === 0 ? (
-                    <Typography variant="body2" color="text.secondary" sx={{ flex: 1, display: 'flex', alignItems: 'center' }}>
-                      Click categories below to select
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        color: "text.secondary",
+                        flex: 1,
+                        display: 'flex',
+                        alignItems: 'center'
+                      }}>
+                      {t('categoryMgmt:categories.clickToSelect')}
                     </Typography>
                   ) : (
                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
@@ -919,7 +918,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                           size="small"
                           onDelete={() => handleCategoryToggle(catName)}
                           sx={{
-                            background: categoryColors[catName] || '#3b82f6',
+                            background: categoryColors[catName] || 'var(--n-info)',
                             color: '#fff',
                             fontWeight: 500,
                             '& .MuiChip-deleteIcon': { color: 'rgba(255,255,255,0.7)' }
@@ -932,7 +931,11 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
               </Grid>
 
               {/* Merge Form - Compact */}
-              <Grid item xs={12} md={6}>
+              <Grid
+                size={{
+                  xs: 12,
+                  md: 6
+                }}>
                 <Box
                   sx={{
                     background: theme.palette.mode === 'dark'
@@ -945,14 +948,14 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                   }}
                 >
                   <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
-                    New Category Name
+                    {t('categoryMgmt:categories.newCategoryName')}
                   </Typography>
                   <TextField
                     fullWidth
                     size="small"
                     value={newCategoryName}
                     onChange={(e) => setNewCategoryName(e.target.value)}
-                    placeholder="e.g., Food & Dining"
+                    placeholder={t('categoryMgmt:categories.newCategoryPlaceholder')}
                     disabled={isLoading || selectedCategories.length < 2}
                     sx={{
                       mb: 1,
@@ -979,10 +982,16 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                       }
                     }}
                   >
-                    {isLoading ? <CircularProgress size={20} color="inherit" /> : 'Merge Categories'}
+                    {isLoading ? <CircularProgress size={20} color="inherit" /> : t('categoryMgmt:categories.mergeCategories')}
                   </Button>
-                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
-                    Auto-mapping will be created for future imports
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: "text.secondary",
+                      display: 'block',
+                      mt: 1
+                    }}>
+                    {t('categoryMgmt:categories.autoMappingHint')}
                   </Typography>
                 </Box>
               </Grid>
@@ -992,11 +1001,11 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
             <Box>
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5, gap: 2 }}>
                 <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                  All Categories ({categories.filter(c => c.name.toLowerCase().includes(categorySearchFilter.toLowerCase())).length})
+                  {t('categoryMgmt:categories.allCategories', { count: categories.filter(c => c.name.toLowerCase().includes(categorySearchFilter.toLowerCase())).length })}
                 </Typography>
                 <TextField
                   size="small"
-                  placeholder="Search categories..."
+                  placeholder={t('categoryMgmt:categories.searchPlaceholder')}
                   value={categorySearchFilter}
                   onChange={(e) => setCategorySearchFilter(e.target.value)}
                   sx={{
@@ -1006,25 +1015,32 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                       background: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.05)' : '#fff'
                     }
                   }}
-                  InputProps={{
-                    startAdornment: (
-                      <InputAdornment position="start">
-                        <SearchIcon sx={{ color: theme.palette.text.secondary, fontSize: 20 }} />
-                      </InputAdornment>
-                    ),
-                    endAdornment: categorySearchFilter && (
-                      <InputAdornment position="end">
-                        <IconButton size="small" onClick={() => setCategorySearchFilter('')}>
-                          <CloseIcon sx={{ fontSize: 16 }} />
-                        </IconButton>
-                      </InputAdornment>
-                    )
+                  slotProps={{
+                    input: {
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <SearchIcon sx={{ color: theme.palette.text.secondary, fontSize: 20 }} />
+                        </InputAdornment>
+                      ),
+                      endAdornment: categorySearchFilter && (
+                        <InputAdornment position="end">
+                          <IconButton size="small" onClick={() => setCategorySearchFilter('')}>
+                            <CloseIcon sx={{ fontSize: 16 }} />
+                          </IconButton>
+                        </InputAdornment>
+                      )
+                    }
                   }}
                 />
               </Box>
 
               {isLoading ? (
-                <Box display="flex" justifyContent="center" padding="32px">
+                <Box
+                  sx={{
+                    display: "flex",
+                    justifyContent: "center",
+                    padding: "32px"
+                  }}>
                   <CircularProgress />
                 </Box>
               ) : (
@@ -1058,15 +1074,15 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                           borderRadius: '8px',
                           cursor: 'pointer',
                           border: selectedCategories.includes(category.name)
-                            ? `2px solid ${categoryColors[category.name] || '#3b82f6'}`
+                            ? `2px solid ${categoryColors[category.name] || 'var(--n-info)'}`
                             : `1px solid ${theme.palette.divider}`,
                           background: selectedCategories.includes(category.name)
-                            ? `linear-gradient(135deg, ${categoryColors[category.name] || '#3b82f6'}15 0%, ${categoryColors[category.name] || '#3b82f6'}05 100%)`
+                            ? `linear-gradient(135deg, ${categoryColors[category.name] || 'var(--n-info)'}15 0%, ${categoryColors[category.name] || 'var(--n-info)'}05 100%)`
                             : theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.03)' : '#fff',
                           transition: 'all 0.15s ease',
                           '&:hover': {
                             boxShadow: '0 2px 6px rgba(0, 0, 0, 0.08)',
-                            borderColor: categoryColors[category.name] || '#3b82f6'
+                            borderColor: categoryColors[category.name] || 'var(--n-info)'
                           }
                         }}
                       >
@@ -1081,7 +1097,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                                   ? 'none'
                                   : `1.5px solid ${theme.palette.divider}`,
                                 background: selectedCategories.includes(category.name)
-                                  ? categoryColors[category.name] || '#3b82f6'
+                                  ? categoryColors[category.name] || 'var(--n-info)'
                                   : 'transparent',
                                 display: 'flex',
                                 alignItems: 'center',
@@ -1117,42 +1133,41 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
           <>
             <Box style={{ marginBottom: '24px' }}>
               <Typography variant="subtitle1" style={{ marginBottom: '12px', fontWeight: 600 }}>
-                Categorization Rules
+                {t('categoryMgmt:rules.sectionTitle')}
               </Typography>
               <Typography variant="body2" color={theme.palette.text.secondary} style={{ marginBottom: '16px' }}>
-                Create rules to automatically categorize transactions based on their names.
-                Rules will be applied to existing and new transactions.
+                {t('categoryMgmt:rules.description')}
               </Typography>
 
               <Grid container spacing={2} style={{ marginBottom: '16px' }}>
-                <Grid item xs={6}>
+                <Grid size={6}>
                   <TextField
                     fullWidth
-                    label="Transaction Name Pattern"
+                    label={t('categoryMgmt:rules.patternLabel')}
                     value={newRule.name_pattern}
                     onChange={(e) => setNewRule({ ...newRule, name_pattern: e.target.value })}
-                    placeholder="e.g., 'starbucks' or 'netflix'"
+                    placeholder={t('categoryMgmt:rules.patternPlaceholder')}
                     disabled={isLoading}
                   />
                 </Grid>
-                <Grid item xs={4}>
+                <Grid size={4}>
                   <TextField
                     fullWidth
-                    label="Target Category"
+                    label={t('categoryMgmt:rules.targetCategoryLabel')}
                     value={newRule.target_category}
                     onChange={(e) => setNewRule({ ...newRule, target_category: e.target.value })}
-                    placeholder="e.g., 'Food' or 'Entertainment'"
+                    placeholder={t('categoryMgmt:rules.targetCategoryPlaceholder')}
                     disabled={isLoading}
                   />
                 </Grid>
-                <Grid item xs={2}>
+                <Grid size={2}>
                   <Button
                     variant="contained"
                     startIcon={<AddIcon />}
                     onClick={handleCreateRule}
                     disabled={!newRule.name_pattern.trim() || !newRule.target_category.trim() || isLoading}
                     style={{
-                      backgroundColor: '#10b981',
+                      backgroundColor: 'var(--n-success)',
                       color: 'white',
                       borderRadius: '12px',
                       padding: '10px 16px',
@@ -1162,7 +1177,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                       width: '100%'
                     }}
                   >
-                    {isLoading ? <CircularProgress size={20} color="inherit" /> : 'Add'}
+                    {isLoading ? <CircularProgress size={20} color="inherit" /> : t('categoryMgmt:rules.addButton')}
                   </Button>
                 </Grid>
               </Grid>
@@ -1173,15 +1188,15 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                 onClick={handleApplyRules}
                 disabled={isApplyingRules || rules.length === 0}
                 style={{
-                  borderColor: '#3b82f6',
-                  color: '#3b82f6',
+                  borderColor: 'var(--n-info)',
+                  color: 'var(--n-info)',
                   borderRadius: '12px',
                   padding: '10px 24px',
                   textTransform: 'none',
                   fontWeight: 600
                 }}
               >
-                {isApplyingRules ? <CircularProgress size={20} color="inherit" /> : 'Apply Rules to Existing Transactions'}
+                {isApplyingRules ? <CircularProgress size={20} color="inherit" /> : t('categoryMgmt:rules.applyToExisting')}
               </Button>
             </Box>
 
@@ -1189,29 +1204,41 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
 
             <Box>
               <Typography variant="subtitle1" style={{ marginBottom: '16px', fontWeight: 600 }}>
-                Active Rules ({rules.length})
+                {t('categoryMgmt:rules.activeRules', { count: rules.length })}
               </Typography>
 
               {isLoadingRules ? (
-                <Box display="flex" justifyContent="center" padding="32px">
+                <Box
+                  sx={{
+                    display: "flex",
+                    justifyContent: "center",
+                    padding: "32px"
+                  }}>
                   <CircularProgress />
                 </Box>
               ) : rules.length === 0 ? (
                 <Box style={{ textAlign: 'center', padding: '32px', color: theme.palette.text.secondary }}>
-                  <Typography>No rules created yet. Create your first rule above.</Typography>
+                  <Typography>'{t('categoryMgmt:rules.noRules')}'</Typography>
                 </Box>
               ) : (
                 <Grid container spacing={2}>
                   {rules.map((rule) => (
-                    <Grid item xs={12} key={rule.id}>
+                    <Grid key={rule.id} size={12}>
                       <Card style={{
                         borderRadius: '12px',
                         backgroundColor: theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.05)' : '#fff',
                         border: theme.palette.mode === 'dark' ? `1px solid ${theme.palette.divider}` : 'none'
                       }}>
                         <CardContent style={{ padding: '16px' }}>
-                          <Box display="flex" alignItems="center" justifyContent="space-between">
-                            <Box flex={1}>
+                          <Box
+                            sx={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between"
+                            }}>
+                            <Box sx={{
+                              flex: 1
+                            }}>
                               <Typography variant="body1" style={{ fontWeight: 600, marginBottom: '4px' }}>
                                 IF transaction name contains "{rule.name_pattern}"
                               </Typography>
@@ -1219,7 +1246,12 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                                 THEN set category to "{rule.target_category}"
                               </Typography>
                             </Box>
-                            <Box display="flex" alignItems="center" gap="8px">
+                            <Box
+                              sx={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "8px"
+                              }}>
                               <FormControlLabel
                                 control={
                                   <Switch
@@ -1235,7 +1267,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                                 size="medium"
                                 sx={{
                                   padding: { xs: '8px', sm: '4px' },
-                                  color: '#3b82f6',
+                                  color: 'var(--n-info)',
                                   '& .MuiSvgIcon-root': {
                                     fontSize: { xs: '20px', sm: '16px' }
                                   }
@@ -1248,7 +1280,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                                 size="medium"
                                 sx={{
                                   padding: { xs: '8px', sm: '4px' },
-                                  color: '#ef4444',
+                                  color: 'var(--n-error)',
                                   '& .MuiSvgIcon-root': {
                                     fontSize: { xs: '20px', sm: '16px' }
                                   }
@@ -1269,31 +1301,41 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
             <Dialog
               open={Boolean(editingRule)}
               onClose={() => setEditingRule(null)}
-              PaperProps={{
-                sx: {
-                  borderRadius: '16px',
-                  padding: '8px',
-                  width: '100%',
-                  maxWidth: '500px'
+              slotProps={{
+                paper: {
+                  sx: {
+                    borderRadius: '16px',
+                    padding: '8px',
+                    width: '100%',
+                    maxWidth: '500px'
+                  }
                 }
               }}
             >
-              <DialogTitle sx={{ fontWeight: 700 }}>Edit Rule</DialogTitle>
+              <DialogTitle sx={{ fontWeight: 700 }}>{t('categoryMgmt:rules.editRuleTitle')}</DialogTitle>
               <DialogContent>
                 <Grid container spacing={2} sx={{ mt: 1 }}>
-                  <Grid item xs={12} sm={6}>
+                  <Grid
+                    size={{
+                      xs: 12,
+                      sm: 6
+                    }}>
                     <TextField
                       fullWidth
-                      label="Transaction Name Pattern"
+                      label={t('categoryMgmt:rules.patternLabel')}
                       value={editingRule?.name_pattern || ''}
                       onChange={(e) => editingRule && setEditingRule({ ...editingRule, name_pattern: e.target.value })}
                       disabled={isLoading}
                     />
                   </Grid>
-                  <Grid item xs={12} sm={6}>
+                  <Grid
+                    size={{
+                      xs: 12,
+                      sm: 6
+                    }}>
                     <TextField
                       fullWidth
-                      label="Target Category"
+                      label={t('categoryMgmt:rules.targetCategoryLabel')}
                       value={editingRule?.target_category || ''}
                       onChange={(e) => editingRule && setEditingRule({ ...editingRule, target_category: e.target.value })}
                       disabled={isLoading}
@@ -1314,7 +1356,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                   onClick={() => editingRule && handleUpdateRule(editingRule)}
                   disabled={isLoading}
                   sx={{
-                    bgcolor: '#3b82f6',
+                    bgcolor: 'var(--n-info)',
                     '&:hover': { bgcolor: '#2563eb' },
                     borderRadius: '8px',
                     textTransform: 'none',
@@ -1322,7 +1364,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                     px: 3
                   }}
                 >
-                  {isLoading ? <CircularProgress size={20} color="inherit" /> : 'Update'}
+                  {isLoading ? <CircularProgress size={20} color="inherit" /> : t('categoryMgmt:rules.updateButton')}
                 </Button>
               </DialogActions>
             </Dialog>
@@ -1341,14 +1383,19 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                   marginBottom: 2,
                   backgroundColor: 'rgba(59, 130, 246, 0.1)',
                   '& .MuiLinearProgress-bar': {
-                    backgroundColor: '#3b82f6'
+                    backgroundColor: 'var(--n-info)'
                   }
                 }}
               />
             )}
 
             {isLoadingQuick ? (
-              <Box display="flex" justifyContent="center" padding="64px">
+              <Box
+                sx={{
+                  display: "flex",
+                  justifyContent: "center",
+                  padding: "64px"
+                }}>
                 <CircularProgress />
               </Box>
             ) : uncategorizedDescriptions.length === 0 ? (
@@ -1406,7 +1453,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                     size="small"
                     sx={{
                       backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                      color: '#3b82f6',
+                      color: 'var(--n-info)',
                       fontWeight: 600
                     }}
                   />
@@ -1460,7 +1507,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                         size="small"
                         sx={{
                           backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                          color: '#3b82f6',
+                          color: 'var(--n-info)',
                           fontWeight: 600
                         }}
                       />
@@ -1469,7 +1516,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                         size="small"
                         sx={{
                           backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                          color: '#ef4444',
+                          color: 'var(--n-error)',
                           fontWeight: 600
                         }}
                       />
@@ -1495,9 +1542,9 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                       <Table size="small" stickyHeader>
                         <TableHead>
                           <TableRow>
-                            <TableCell sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', backgroundColor: theme.palette.mode === 'dark' ? theme.palette.action.hover : '#f1f5f9', color: theme.palette.text.secondary, fontSize: '0.75rem' }}>Date</TableCell>
-                            <TableCell sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', backgroundColor: theme.palette.mode === 'dark' ? theme.palette.action.hover : '#f1f5f9', color: theme.palette.text.secondary, fontSize: '0.75rem' }}>Amount</TableCell>
-                            <TableCell sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', backgroundColor: theme.palette.mode === 'dark' ? theme.palette.action.hover : '#f1f5f9', color: theme.palette.text.secondary, fontSize: '0.75rem' }}>Card</TableCell>
+                            <TableCell sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', backgroundColor: theme.palette.mode === 'dark' ? theme.palette.action.hover : '#f1f5f9', color: theme.palette.text.secondary, fontSize: '0.75rem' }}>{t('categoryMgmt:quick.tableDate')}</TableCell>
+                            <TableCell sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', backgroundColor: theme.palette.mode === 'dark' ? theme.palette.action.hover : '#f1f5f9', color: theme.palette.text.secondary, fontSize: '0.75rem' }}>{t('categoryMgmt:quick.tableAmount')}</TableCell>
+                            <TableCell sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', backgroundColor: theme.palette.mode === 'dark' ? theme.palette.action.hover : '#f1f5f9', color: theme.palette.text.secondary, fontSize: '0.75rem' }}>{t('categoryMgmt:quick.tableCard')}</TableCell>
                           </TableRow>
                         </TableHead>
                         <TableBody>
@@ -1506,7 +1553,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                               <TableCell sx={{ color: theme.palette.text.secondary, fontSize: '0.8125rem' }}>
                                 {formatQuickDate(tx.date)}
                               </TableCell>
-                              <TableCell sx={{ color: tx.price < 0 ? '#ef4444' : '#22c55e', fontWeight: 600, fontSize: '0.8125rem' }}>
+                              <TableCell sx={{ color: tx.price < 0 ? 'var(--n-error)' : '#22c55e', fontWeight: 600, fontSize: '0.8125rem' }}>
                                 {formatQuickCurrency(Math.abs(tx.price))}
                               </TableCell>
                               <TableCell sx={{ color: theme.palette.text.secondary, fontSize: '0.8125rem' }}>
@@ -1560,7 +1607,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                       onClick={() => handleQuickCategorySelect(cat.name)}
                       disabled={isSavingQuick}
                       sx={{
-                        backgroundColor: categoryColors[cat.name] || '#3b82f6',
+                        backgroundColor: categoryColors[cat.name] || 'var(--n-info)',
                         color: '#fff',
                         textTransform: 'none',
                         fontWeight: 600,
@@ -1569,7 +1616,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                         fontSize: '13px',
                         minWidth: 'auto',
                         '&:hover': {
-                          backgroundColor: categoryColors[cat.name] || '#3b82f6',
+                          backgroundColor: categoryColors[cat.name] || 'var(--n-info)',
                           filter: 'brightness(1.1)',
                           transform: 'translateY(-1px)',
                         },
@@ -1598,22 +1645,8 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                         }
                       }}
                       autoFocus
-                      placeholder="New category"
+                      placeholder={t('categoryMgmt:quick.newCategoryPlaceholder')}
                       disabled={isSavingQuick}
-                      InputProps={{
-                        endAdornment: (
-                          <InputAdornment position="end">
-                            <IconButton
-                              size="small"
-                              onClick={handleAddNewQuickCategory}
-                              disabled={!newQuickCategoryInput.trim() || isSavingQuick}
-                              sx={{ color: '#22c55e' }}
-                            >
-                              <CheckIcon fontSize="small" />
-                            </IconButton>
-                          </InputAdornment>
-                        )
-                      }}
                       sx={{
                         minWidth: '160px',
                         '& .MuiOutlinedInput-root': {
@@ -1623,6 +1656,22 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                             borderColor: '#22c55e',
                             borderWidth: '2px'
                           }
+                        }
+                      }}
+                      slotProps={{
+                        input: {
+                          endAdornment: (
+                            <InputAdornment position="end">
+                              <IconButton
+                                size="small"
+                                onClick={handleAddNewQuickCategory}
+                                disabled={!newQuickCategoryInput.trim() || isSavingQuick}
+                                sx={{ color: '#22c55e' }}
+                              >
+                                <CheckIcon fontSize="small" />
+                              </IconButton>
+                            </InputAdornment>
+                          )
                         }
                       }}
                     />
@@ -1658,16 +1707,15 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
           <>
             <Box style={{ marginBottom: '24px' }}>
               <Typography variant="subtitle1" style={{ marginBottom: '12px', fontWeight: 600 }}>
-                Category Mappings
+                {t('categoryMgmt:mappings.sectionTitle')}
               </Typography>
               <Typography variant="body2" color={theme.palette.text.secondary} style={{ marginBottom: '16px' }}>
-                When you merge categories, a mapping is created.
-                Any new transactions scraped from a source category will automatically be moved to the target category.
+                {t('categoryMgmt:mappings.description')}
               </Typography>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, backgroundColor: theme.palette.mode === 'dark' ? 'rgba(59, 130, 246, 0.1)' : 'rgba(59, 130, 246, 0.05)', padding: '12px', borderRadius: '12px', marginBottom: '20px' }}>
-                <HelpOutlineIcon sx={{ color: '#3b82f6', fontSize: 20 }} />
+                <HelpOutlineIcon sx={{ color: 'var(--n-info)', fontSize: 20 }} />
                 <Typography variant="body2" sx={{ color: theme.palette.mode === 'dark' ? '#93c5fd' : '#1e40af' }}>
-                  Mappings are created automatically during the Merge process.
+                  {t('categoryMgmt:mappings.infoNotice')}
                 </Typography>
               </Box>
 
@@ -1679,35 +1727,54 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                 border: `1px dashed ${theme.palette.divider}`
               }}>
                 <Typography variant="subtitle2" sx={{ mb: 2, fontWeight: 700, color: theme.palette.text.primary }}>
-                  Create Manual Mapping
+                  {t('categoryMgmt:mappings.createManual')}
                 </Typography>
-                <Grid container spacing={2} alignItems="flex-end">
-                  <Grid item xs={12} sm={5}>
+                <Grid container spacing={2} sx={{
+                  alignItems: "flex-end"
+                }}>
+                  <Grid
+                    size={{
+                      xs: 12,
+                      sm: 5
+                    }}>
                     <TextField
                       size="small"
-                      label="Source Category"
-                      placeholder="e.g. Scraper Category"
+                      label={t('categoryMgmt:mappings.sourceLabel')}
+                      placeholder={t('categoryMgmt:mappings.sourcePlaceholder')}
                       value={newMappingSource}
                       onChange={(e) => setNewMappingSource(e.target.value)}
                       fullWidth
                       sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }}
                     />
                   </Grid>
-                  <Grid item xs={12} sm={1} sx={{ display: 'flex', justifyContent: 'center', pb: 1.5 }}>
+                  <Grid
+                    sx={{ display: 'flex', justifyContent: 'center', pb: 1.5 }}
+                    size={{
+                      xs: 12,
+                      sm: 1
+                    }}>
                     <ArrowForwardIcon sx={{ opacity: 0.3 }} />
                   </Grid>
-                  <Grid item xs={12} sm={4}>
+                  <Grid
+                    size={{
+                      xs: 12,
+                      sm: 4
+                    }}>
                     <TextField
                       size="small"
-                      label="Target Mapping"
-                      placeholder="e.g. Your Category"
+                      label={t('categoryMgmt:mappings.targetLabel')}
+                      placeholder={t('categoryMgmt:mappings.targetPlaceholder')}
                       value={newMappingTarget}
                       onChange={(e) => setNewMappingTarget(e.target.value)}
                       fullWidth
                       sx={{ '& .MuiOutlinedInput-root': { borderRadius: '10px' } }}
                     />
                   </Grid>
-                  <Grid item xs={12} sm={2}>
+                  <Grid
+                    size={{
+                      xs: 12,
+                      sm: 2
+                    }}>
                     <Button
                       variant="contained"
                       onClick={handleAddMapping}
@@ -1722,7 +1789,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                         '&:hover': { boxShadow: 'none' }
                       }}
                     >
-                      Add
+                      {t('categoryMgmt:mappings.addButton')}
                     </Button>
                   </Grid>
                 </Grid>
@@ -1733,31 +1800,49 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
 
             <Box>
               <Typography variant="subtitle1" style={{ marginBottom: '16px', fontWeight: 600 }}>
-                Active Mappings ({mappings.length})
+                {t('categoryMgmt:mappings.activeMappings', { count: mappings.length })}
               </Typography>
 
               {isLoadingMappings ? (
-                <Box display="flex" justifyContent="center" padding="32px">
+                <Box
+                  sx={{
+                    display: "flex",
+                    justifyContent: "center",
+                    padding: "32px"
+                  }}>
                   <CircularProgress />
                 </Box>
               ) : mappings.length === 0 ? (
                 <Box style={{ textAlign: 'center', padding: '32px', color: theme.palette.text.secondary }}>
-                  <Typography>No mappings found. Merge categories to create them.</Typography>
+                  <Typography>{t('categoryMgmt:mappings.noMappings')}</Typography>
                 </Box>
               ) : (
                 <Grid container spacing={2}>
                   {mappings.map((mapping) => (
-                    <Grid item xs={12} key={mapping.id}>
+                    <Grid key={mapping.id} size={12}>
                       <Card style={{
                         borderRadius: '12px',
                         backgroundColor: theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.05)' : '#fff',
                         border: theme.palette.mode === 'dark' ? `1px solid ${theme.palette.divider}` : 'none'
                       }}>
                         <CardContent style={{ padding: '16px' }}>
-                          <Box display="flex" alignItems="center" justifyContent="space-between">
-                            <Box display="flex" alignItems="center" gap={2} flex={1}>
+                          <Box
+                            sx={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between"
+                            }}>
+                            <Box
+                              sx={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 2,
+                                flex: 1
+                              }}>
                               <Box sx={{ flex: 1 }}>
-                                <Typography variant="caption" color="textSecondary" display="block">Source</Typography>
+                                <Typography variant="caption" color="textSecondary" sx={{
+                                  display: "block"
+                                }}>{t('categoryMgmt:mappings.sourceColumn')}</Typography>
                                 <Chip
                                   label={mapping.source_category}
                                   size="small"
@@ -1770,7 +1855,9 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                               </Box>
                               <ArrowForwardIcon sx={{ color: theme.palette.text.secondary, opacity: 0.5 }} />
                               <Box sx={{ flex: 1 }}>
-                                <Typography variant="caption" color="textSecondary" display="block">Target</Typography>
+                                <Typography variant="caption" color="textSecondary" sx={{
+                                  display: "block"
+                                }}>{t('categoryMgmt:mappings.targetColumn')}</Typography>
                                 {editingMapping?.id === mapping.id ? (
                                   <TextField
                                     size="small"
@@ -1793,7 +1880,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                                     label={mapping.target_category}
                                     size="small"
                                     sx={{
-                                      backgroundColor: categoryColors[mapping.target_category] || '#3b82f6',
+                                      backgroundColor: categoryColors[mapping.target_category] || 'var(--n-info)',
                                       color: '#fff',
                                       fontWeight: 600
                                     }}
@@ -1827,16 +1914,16 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                                       setEditMappingTarget(mapping.target_category);
                                     }}
                                     size="small"
-                                    sx={{ color: '#3b82f6', mr: 1 }}
-                                    title="Edit target category"
+                                    sx={{ color: 'var(--n-info)', mr: 1 }}
+                                    title={t('categoryMgmt:mappings.tooltipEditTarget')}
                                   >
                                     <EditIcon />
                                   </IconButton>
                                   <IconButton
                                     onClick={() => handleDeleteMapping(mapping.id)}
                                     size="small"
-                                    style={{ color: '#ef4444' }}
-                                    title="Remove mapping"
+                                    style={{ color: 'var(--n-error)' }}
+                                    title={t('categoryMgmt:mappings.tooltipRemove')}
                                   >
                                     <DeleteIcon />
                                   </IconButton>
@@ -1859,19 +1946,26 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
             setDeletingCategory(null);
             setDeleteOptions({ deleteRules: true, deleteBudget: true });
           }}
-          PaperProps={{
-            sx: {
-              borderRadius: '16px',
-              padding: '8px',
-              width: '100%',
-              maxWidth: '450px'
+          slotProps={{
+            paper: {
+              sx: {
+                borderRadius: '16px',
+                padding: '8px',
+                width: '100%',
+                maxWidth: '450px'
+              }
             }
           }}
         >
-          <DialogTitle sx={{ fontWeight: 700, color: '#ef4444' }}>Delete Category</DialogTitle>
+          <DialogTitle sx={{ fontWeight: 700, color: 'var(--n-error)' }}>{t('categoryMgmt:deleteDialog.title')}</DialogTitle>
           <DialogContent>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-              Are you sure you want to delete "{deletingCategory}"? All transactions with this category will become uncategorized.
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+                mb: 3
+              }}>
+              {t('categoryMgmt:deleteDialog.description', { name: deletingCategory })}
             </Typography>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
               <FormControlLabel
@@ -1882,7 +1976,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                     disabled={isLoading}
                   />
                 }
-                label={<Typography variant="body2">Also delete categorization rules targeting this category</Typography>}
+                label={<Typography variant="body2">{t('categoryMgmt:deleteDialog.alsoDeleteRules')}</Typography>}
               />
               <FormControlLabel
                 control={
@@ -1892,7 +1986,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                     disabled={isLoading}
                   />
                 }
-                label={<Typography variant="body2">Also delete budget for this category</Typography>}
+                label={<Typography variant="body2">{t('categoryMgmt:deleteDialog.alsoDeleteBudget')}</Typography>}
               />
             </Box>
           </DialogContent>
@@ -1912,7 +2006,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
               onClick={handleDeleteCategory}
               disabled={isLoading}
               sx={{
-                bgcolor: '#ef4444',
+                bgcolor: 'var(--n-error)',
                 '&:hover': { bgcolor: '#dc2626' },
                 borderRadius: '8px',
                 textTransform: 'none',
@@ -1920,7 +2014,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                 px: 3
               }}
             >
-              {isLoading ? <CircularProgress size={20} color="inherit" /> : 'Delete'}
+              {isLoading ? <CircularProgress size={20} color="inherit" /> : t('categoryMgmt:deleteDialog.title')}
             </Button>
           </DialogActions>
         </Dialog>
@@ -1932,23 +2026,30 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
             setRenamingCategory(null);
             setRenameNewName('');
           }}
-          PaperProps={{
-            sx: {
-              borderRadius: '16px',
-              padding: '8px',
-              width: '100%',
-              maxWidth: '400px'
+          slotProps={{
+            paper: {
+              sx: {
+                borderRadius: '16px',
+                padding: '8px',
+                width: '100%',
+                maxWidth: '400px'
+              }
             }
           }}
         >
-          <DialogTitle sx={{ fontWeight: 700 }}>Rename Category</DialogTitle>
+          <DialogTitle sx={{ fontWeight: 700 }}>{t('categoryMgmt:renameDialog.title')}</DialogTitle>
           <DialogContent>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-              Rename "{renamingCategory}" to a new name. All transactions with this category will be updated.
+            <Typography
+              variant="body2"
+              sx={{
+                color: "text.secondary",
+                mb: 3
+              }}>
+              {t('categoryMgmt:renameDialog.description', { name: renamingCategory })}
             </Typography>
             <TextField
               fullWidth
-              label="New Category Name"
+              label={t('categoryMgmt:renameDialog.newNameLabel')}
               value={renameNewName}
               onChange={(e) => setRenameNewName(e.target.value)}
               disabled={isLoading}
@@ -1977,7 +2078,7 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
               onClick={handleRenameCategory}
               disabled={isLoading || !renameNewName.trim() || renameNewName.trim() === renamingCategory}
               sx={{
-                bgcolor: '#3b82f6',
+                bgcolor: 'var(--n-info)',
                 '&:hover': { bgcolor: '#2563eb' },
                 borderRadius: '8px',
                 textTransform: 'none',
@@ -1985,12 +2086,11 @@ const CategoryManagementModal: React.FC<CategoryManagementModalProps> = ({
                 px: 3
               }}
             >
-              {isLoading ? <CircularProgress size={20} color="inherit" /> : 'Rename'}
+              {isLoading ? <CircularProgress size={20} color="inherit" /> : t('categoryMgmt:renameDialog.renameButton')}
             </Button>
           </DialogActions>
         </Dialog>
       </DialogContent>
-
       <DialogActions style={{ padding: '16px 24px 24px 24px' }}>
         <Button
           onClick={handleClose}

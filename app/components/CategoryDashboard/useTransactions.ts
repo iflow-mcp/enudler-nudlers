@@ -27,14 +27,22 @@ export function useTransactions() {
   const [loadingMore, setLoadingMore] = React.useState(false);
   const [favoritesOnly, setFavoritesOnly] = React.useState(false);
   const scrollThrottleRef = React.useRef(false);
+  // Mirror transactions.length in a ref so fetchers can read it without stale closures
+  const transactionsLengthRef = React.useRef(0);
+  React.useEffect(() => {
+    transactionsLengthRef.current = transactions.length;
+  }, [transactions]);
+  // Incrementing request id — responses from superseded requests are ignored
+  const requestIdRef = React.useRef(0);
 
   const fetchTransactionsWithRange = React.useCallback(async (
     sd: string, ed: string, bc?: string, isLoadMore: boolean = false
   ) => {
+    const requestId = ++requestIdRef.current;
     if (!isLoadMore) {
-      // If we already have transactions, don't show the main loading spinner 
+      // If we already have transactions, don't show the main loading spinner
       // to prevent the UI from "jumping" during a refresh
-      if (transactions.length === 0) {
+      if (transactionsLengthRef.current === 0) {
         setLoadingTransactions(true);
       }
       pageRef.current = 0;
@@ -66,7 +74,8 @@ export function useTransactions() {
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
       const transactionsData = await response.json();
-      const mappedTransactions = transactionsData.map((t: any) => ({
+      if (requestId !== requestIdRef.current) return; // stale response — a newer fetch is in flight
+      const mappedTransactions = transactionsData.map((t: { category?: string;[key: string]: unknown }) => ({
         ...t,
         category: t.category || 'Unassigned',
         identifier: t.identifier || 'unknown',
@@ -86,10 +95,12 @@ export function useTransactions() {
         month: selectedMonth
       });
     } finally {
-      if (!isLoadMore) {
-        setLoadingTransactions(false);
-      } else {
-        setLoadingMore(false);
+      if (requestId === requestIdRef.current) {
+        if (!isLoadMore) {
+          setLoadingTransactions(false);
+        } else {
+          setLoadingMore(false);
+        }
       }
     }
   }, [selectedYear, selectedMonth, sortBy, sortOrder, favoritesOnly]);
@@ -103,9 +114,10 @@ export function useTransactions() {
       return;
     }
 
+    const requestId = ++requestIdRef.current;
     if (!isLoadMore) {
       // If we already have transactions, don't show the main loading spinner
-      if (transactions.length === 0) {
+      if (transactionsLengthRef.current === 0) {
         setLoadingTransactions(true);
       }
       pageRef.current = 0;
@@ -135,6 +147,7 @@ export function useTransactions() {
       const response = await fetch(`/api/transactions?${queryParams}`);
       if (response.ok) {
         const results = await response.json();
+        if (requestId !== requestIdRef.current) return; // stale response — a newer fetch is in flight
         if (isLoadMore) {
           setTransactions(prev => [...prev, ...results]);
           pageRef.current = currentPage;
@@ -147,12 +160,14 @@ export function useTransactions() {
       logger.error('Search error', error, { query: searchQuery });
       showNotification('Search failed', 'error');
     } finally {
-      if (!isLoadMore) {
-        setLoadingTransactions(false);
-      } else {
-        setLoadingMore(false);
+      if (requestId === requestIdRef.current) {
+        if (!isLoadMore) {
+          setLoadingTransactions(false);
+        } else {
+          setLoadingMore(false);
+        }
+        setIsSearching(false);
       }
-      setIsSearching(false);
     }
   }, [
     searchQuery, startDate, endDate, billingCycle,
@@ -169,7 +184,7 @@ export function useTransactions() {
     pageRef.current = 0;
   };
 
-  const handleLoadMore = () => {
+  const handleLoadMore = React.useCallback(() => {
     if (!loadingTransactions && !loadingMore && hasMore) {
       if (searchQuery.trim()) {
         handleSearch(undefined, true);
@@ -177,7 +192,7 @@ export function useTransactions() {
         fetchTransactionsWithRange(startDate, endDate, billingCycle, true);
       }
     }
-  };
+  }, [loadingTransactions, loadingMore, hasMore, searchQuery, startDate, endDate, billingCycle, handleSearch, fetchTransactionsWithRange]);
 
   const handleRefreshClick = () => {
     if (searchQuery.trim()) {
@@ -201,16 +216,14 @@ export function useTransactions() {
     };
   }, [startDate, endDate, billingCycle, fetchTransactionsWithRange, searchQuery, handleSearch]);
 
-  // Initial data fetch
+  // Initial data fetch — fires only on date/sort/favorites changes.
+  // Search fires only on explicit submit (handleSearch), never per keystroke,
+  // so we go through refreshRef (kept current above) instead of depending on searchQuery/handleSearch.
   React.useEffect(() => {
-    if (startDate && endDate) {
-      if (searchQuery.trim()) {
-        handleSearch();
-      } else {
-        fetchTransactionsWithRange(startDate, endDate, billingCycle);
-      }
-    }
-  }, [startDate, endDate, billingCycle, fetchTransactionsWithRange, searchQuery, favoritesOnly, handleSearch]);
+    if (!startDate || !endDate) return;
+    queueMicrotask(() => refreshRef.current());
+    // sortBy/sortOrder/favoritesOnly trigger a refetch via refreshRef; searchQuery/handleSearch intentionally excluded so typing doesn't fetch
+  }, [startDate, endDate, billingCycle, sortBy, sortOrder, favoritesOnly]);
 
   // Stable event listener - attached once, never re-attached
   React.useEffect(() => {
@@ -219,7 +232,7 @@ export function useTransactions() {
     return () => window.removeEventListener('dataRefresh', handleRefresh);
   }, []);
 
-  const handleDeleteTransaction = async (transaction: Expense) => {
+  const handleDeleteTransaction = async (transaction: Expense): Promise<boolean> => {
     try {
       const response = await fetch(`/api/transactions/${transaction.identifier}|${transaction.vendor}`, {
         method: 'DELETE',
@@ -229,14 +242,15 @@ export function useTransactions() {
         setTransactions(prev => prev.filter(t =>
           t.identifier !== transaction.identifier || t.vendor !== transaction.vendor
         ));
-      } else {
-        throw new Error('Failed to delete transaction');
+        return true;
       }
+      throw new Error('Failed to delete transaction');
     } catch (error) {
       logger.error('Error deleting transaction', error, {
         transactionId: transaction.identifier,
         vendor: transaction.vendor
       });
+      return false;
     }
   };
 

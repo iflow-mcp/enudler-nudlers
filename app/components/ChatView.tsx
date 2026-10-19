@@ -15,19 +15,19 @@ import {
     ListItemText,
     Divider,
     Button,
-    useMediaQuery,
-    Tooltip,
     Skeleton,
 } from '@mui/material';
 import ForumIcon from '@mui/icons-material/Forum';
 import AddIcon from '@mui/icons-material/Add';
 import SendIcon from '@mui/icons-material/Send';
-import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlineOutlined';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 import PersonIcon from '@mui/icons-material/Person';
-import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import ChatIcon from '@mui/icons-material/Chat';
 import { useScreenContext } from './Layout';
+import { useTranslation } from 'react-i18next';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 interface Message {
     id: string;
@@ -93,8 +93,8 @@ const InputContainer = styled(Box)(({ theme }) => ({
 
 const ChatView: React.FC = () => {
     const theme = useTheme();
-    const isMobile = useMediaQuery(theme.breakpoints.down('md'));
     const { screenContext } = useScreenContext();
+    const { t } = useTranslation('views');
     const [sessions, setSessions] = useState<ChatSession[]>([]);
     const [currentSessionId, setCurrentSessionId] = useState<number | null>(null);
     const [messages, setMessages] = useState<Message[]>([]);
@@ -133,7 +133,7 @@ const ChatView: React.FC = () => {
             const response = await fetch(`/api/chat/messages?sessionId=${sessionId}`);
             if (response.ok) {
                 const data = await response.json();
-                setMessages(data.map((m: any) => ({
+                setMessages(data.map((m: { timestamp: string;[key: string]: unknown }) => ({
                     ...m,
                     timestamp: new Date(m.timestamp),
                     status: 'complete'
@@ -229,11 +229,11 @@ const ChatView: React.FC = () => {
 
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.error || 'Failed to get response');
+                throw new Error(errorData.error || t('chat.errorFailedToGet'));
             }
 
             const reader = response.body?.getReader();
-            if (!reader) throw new Error('No stream');
+            if (!reader) throw new Error(t('chat.errorNoStream'));
 
             const decoder = new TextDecoder();
             let buffer = '';
@@ -259,14 +259,14 @@ const ChatView: React.FC = () => {
                             if (data.error) {
                                 setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, content: data.error, status: 'error' } : m));
                             } else if (data.status === 'thinking') {
-                                setCurrentStatus('Thinking...');
+                                setCurrentStatus(t('chat.thinking'));
                             } else if (data.status === 'fetching_data') {
-                                setCurrentStatus(data.message || 'Fetching data...');
+                                setCurrentStatus(data.message || t('chat.fetchingDataDefault'));
                             } else if (data.status === 'streaming' || data.status === 'complete') {
                                 setCurrentStatus('');
                                 setMessages(prev => prev.map(m =>
                                     m.id === assistantMsgId
-                                        ? { ...m, content: data.text, status: data.done ? 'complete' : 'streaming' }
+                                        ? { ...m, content: data.text || '', status: data.done ? 'complete' : 'streaming' }
                                         : m
                                 ));
                                 if (data.done) {
@@ -280,32 +280,17 @@ const ChatView: React.FC = () => {
             }
         } catch (err) {
             if ((err as Error).name !== 'AbortError') {
-                setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, content: 'Error: ' + (err as Error).message, status: 'error' } : m));
+                setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, content: t('chat.errorWithMessage', { message: (err as Error).message }), status: 'error' } : m));
             }
         } finally {
             setIsLoading(false);
             setCurrentStatus('');
         }
-    }, [isLoading, currentSessionId, screenContext]);
+    }, [isLoading, currentSessionId, screenContext, t]);
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
         sendMessage(inputValue);
-    };
-
-    const formatContent = (content: string) => {
-        if (!content) return '';
-        return content
-            .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-            .replace(/\*(.*?)\*/g, '<em>$1</em>')
-            .replace(/^### (.*?)$/gm, '<h4 style="margin: 16px 0 8px 0; font-weight: 700;">$1</h4>')
-            .replace(/^## (.*?)$/gm, '<h3 style="margin: 16px 0 8px 0; font-weight: 700;">$1</h3>')
-            .replace(/^# (.*?)$/gm, '<h2 style="margin: 16px 0 8px 0; font-weight: 700;">$1</h2>')
-            .replace(/^- (.*?)$/gm, '<li style="margin-left: 20px; margin-bottom: 4px;">$1</li>')
-            .replace(/^\d+\. (.*?)$/gm, '<li style="margin-left: 20px; margin-bottom: 4px; list-style-type: decimal;">$1</li>')
-            .replace(/\n\n/g, '<div style="height: 12px;"></div>')
-            .replace(/\n/g, '<br/>');
     };
 
     return (
@@ -324,14 +309,14 @@ const ChatView: React.FC = () => {
                             fontWeight: 600,
                             py: 1,
                             borderColor: 'rgba(99, 102, 241, 0.3)',
-                            color: '#6366f1',
+                            color: 'var(--n-primary-500)',
                             '&:hover': {
-                                borderColor: '#6366f1',
+                                borderColor: 'var(--n-primary-500)',
                                 backgroundColor: 'rgba(99, 102, 241, 0.04)',
                             }
                         }}
                     >
-                        New Chat
+                        {t('chat.newChat')}
                     </Button>
                 </Box>
 
@@ -363,11 +348,11 @@ const ChatView: React.FC = () => {
                                             }
                                         }}
                                     >
-                                        <ListItemIcon sx={{ minWidth: 36, color: currentSessionId === session.id ? '#6366f1' : 'text.secondary' }}>
+                                        <ListItemIcon sx={{ minWidth: 36, color: currentSessionId === session.id ? 'var(--n-primary-500)' : 'text.secondary' }}>
                                             <ChatIcon fontSize="small" />
                                         </ListItemIcon>
                                         <ListItemText
-                                            primary={session.title || 'New Conversation'}
+                                            primary={session.title || t('chat.newConversation')}
                                             sx={{
                                                 '& .MuiTypography-root': {
                                                     fontSize: '0.875rem',
@@ -381,7 +366,7 @@ const ChatView: React.FC = () => {
                                         <IconButton
                                             size="small"
                                             onClick={(e) => deleteSession(e, session.id)}
-                                            sx={{ opacity: 0, '.MuiListItemButton-root:hover &': { opacity: 0.6 }, '&:hover': { opacity: 1, color: '#ef4444' } }}
+                                            sx={{ opacity: 0, '.MuiListItemButton-root:hover &': { opacity: 0.6 }, '&:hover': { opacity: 1, color: 'var(--n-error)' } }}
                                         >
                                             <DeleteOutlineIcon fontSize="small" />
                                         </IconButton>
@@ -412,14 +397,14 @@ const ChatView: React.FC = () => {
                                 <ForumIcon sx={{ fontSize: 40, color: 'white' }} />
                             </Box>
                             <Typography variant="h5" sx={{ fontWeight: 700, mb: 1, color: 'text.primary' }}>
-                                Chat with Nudlers AI
+                                {t('chat.emptyStateTitle')}
                             </Typography>
                             <Typography variant="body1" sx={{ color: 'text.secondary', textAlign: 'center', maxWidth: 400 }}>
-                                Ask me anything about your expenses, budgets, or financial trends. I have full access to your transaction history.
+                                {t('chat.emptyStateDescription')}
                             </Typography>
 
                             <Box sx={{ mt: 4, display: 'flex', gap: 2, flexWrap: 'wrap', justifyContent: 'center' }}>
-                                {["Summarize my spending this month", "What are my biggest expenses?", "How much did I spend on groceries in the last 3 months?"].map((q, i) => (
+                                {[t('chat.examples.summarizeMonth'), t('chat.examples.biggestExpenses'), t('chat.examples.groceriesLast3Months')].map((q, i) => (
                                     <Button
                                         key={i}
                                         variant="outlined"
@@ -429,7 +414,7 @@ const ChatView: React.FC = () => {
                                             textTransform: 'none',
                                             borderColor: 'divider',
                                             color: 'text.secondary',
-                                            '&:hover': { borderColor: '#6366f1', color: '#6366f1' }
+                                            '&:hover': { borderColor: 'var(--n-primary-500)', color: 'var(--n-primary-500)' }
                                         }}
                                     >
                                         {q}
@@ -472,20 +457,25 @@ const ChatView: React.FC = () => {
                                         boxShadow: 'none'
                                     }}>
                                         {msg.content ? (
-                                            <Typography
-                                                variant="body1"
-                                                dangerouslySetInnerHTML={{ __html: formatContent(msg.content) }}
+                                            <Box
                                                 sx={{
                                                     fontSize: '0.95rem',
                                                     lineHeight: 1.6,
-                                                    color: msg.status === 'error' ? '#ef4444' : 'inherit',
-                                                    fontWeight: msg.status === 'error' ? 600 : 400
+                                                    color: msg.status === 'error' ? 'var(--n-error)' : 'inherit',
+                                                    fontWeight: msg.status === 'error' ? 600 : 400,
+                                                    '& p': { m: 0, mb: 1, '&:last-child': { mb: 0 } },
+                                                    '& ul, & ol': { m: 0, pl: 2.5, mb: 1 },
+                                                    '& li': { mb: 0.5 },
                                                 }}
-                                            />
+                                            >
+                                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                                    {msg.content}
+                                                </ReactMarkdown>
+                                            </Box>
                                         ) : (
                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, py: 0.5 }}>
-                                                <CircularProgress size={16} sx={{ color: msg.role === 'user' ? 'white' : '#6366f1' }} />
-                                                <Typography variant="body2" sx={{ opacity: 0.8 }}>{currentStatus || 'Thinking...'}</Typography>
+                                                <CircularProgress size={16} sx={{ color: msg.role === 'user' ? 'white' : 'var(--n-primary-500)' }} />
+                                                <Typography variant="body2" sx={{ opacity: 0.8 }}>{currentStatus || t('chat.thinking')}</Typography>
                                             </Box>
                                         )}
                                     </Paper>
@@ -503,7 +493,7 @@ const ChatView: React.FC = () => {
                                 fullWidth
                                 multiline
                                 maxRows={6}
-                                placeholder="Ask Nudlers Assistant..."
+                                placeholder={t('chat.placeholderNudlers')}
                                 value={inputValue}
                                 onChange={(e) => setInputValue(e.target.value)}
                                 onKeyDown={(e) => {

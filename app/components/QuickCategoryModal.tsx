@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { logger } from '../utils/client-logger';
 import {
   Dialog,
@@ -63,6 +64,7 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
   onComplete
 }) => {
   const theme = useTheme();
+  const { t } = useTranslation(['misc', 'common']);
   const [descriptions, setDescriptions] = useState<UncategorizedDescription[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -99,17 +101,18 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
       setCurrentIndex(0);
     } catch (err) {
       logger.error('Error fetching data', err as Error);
-      setError('Failed to load data. Please try again.');
+      setError(t('misc:quickCategory.loadFailed'));
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
-    if (open) {
-      fetchData();
+    if (!open) return;
+    queueMicrotask(() => {
       setTotalProcessed(0);
-    }
+      fetchData();
+    });
   }, [open, fetchData]);
 
   // Fetch transactions when current description changes
@@ -134,11 +137,13 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
 
   useEffect(() => {
     const currentDescription = descriptions[currentIndex];
-    if (currentDescription?.description) {
-      fetchTransactions(currentDescription.description);
-    } else {
-      setTransactions([]);
-    }
+    queueMicrotask(() => {
+      if (currentDescription?.description) {
+        fetchTransactions(currentDescription.description);
+      } else {
+        setTransactions([]);
+      }
+    });
   }, [currentIndex, descriptions, fetchTransactions]);
 
   const handleCategorySelect = async (category: string) => {
@@ -164,11 +169,11 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to update category');
+        throw new Error(errorData.error || t('misc:quickCategory.updateFailed'));
       }
 
       const result = await response.json();
-      setSuccess(`Updated ${result.transactionsUpdated} transaction(s) to "${category}"`);
+      setSuccess(t('misc:quickCategory.updateSuccess', { count: result.transactionsUpdated, category }));
       setTotalProcessed(prev => prev + 1);
 
       // Move to next description
@@ -178,7 +183,7 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
       setTimeout(() => setSuccess(null), 1500);
     } catch (err) {
       logger.error('Error updating category', err as Error);
-      setError(err instanceof Error ? err.message : 'Failed to update category');
+      setError(err instanceof Error ? err.message : t('misc:quickCategory.updateFailed'));
     } finally {
       setIsSaving(false);
     }
@@ -250,28 +255,30 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
       onClose={handleClose}
       maxWidth="md"
       fullWidth
-      PaperProps={{
-        style: {
-          backgroundColor: theme.palette.mode === 'dark' ? theme.palette.background.paper : '#ffffff',
-          borderRadius: '24px',
-          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)',
-          minHeight: '600px',
-          maxHeight: '90vh',
-          backgroundImage: theme.palette.mode === 'dark' ? 'linear-gradient(rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.05))' : 'none',
+      slotProps={{
+        paper: {
+          style: {
+            backgroundColor: theme.palette.mode === 'dark' ? theme.palette.background.paper : '#ffffff',
+            borderRadius: '24px',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)',
+            minHeight: '600px',
+            maxHeight: '90vh',
+            backgroundImage: theme.palette.mode === 'dark' ? 'linear-gradient(rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.05))' : 'none',
+          }
         }
       }}
     >
       <ModalHeader
         title={
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            <span>Quick Categorize</span>
+            <span>{t('misc:quickCategory.title')}</span>
             {descriptions.length > 0 && (
               <Chip
-                label={`${remaining} remaining`}
+                label={t('misc:quickCategory.remaining', { count: remaining })}
                 size="small"
                 sx={{
                   backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                  color: '#3b82f6',
+                  color: 'var(--n-info)',
                   fontWeight: 600
                 }}
               />
@@ -280,7 +287,6 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
         }
         onClose={handleClose}
       />
-
       {descriptions.length > 0 && (
         <LinearProgress
           variant="determinate"
@@ -289,12 +295,11 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
             height: 4,
             backgroundColor: 'rgba(59, 130, 246, 0.1)',
             '& .MuiLinearProgress-bar': {
-              backgroundColor: '#3b82f6'
+              backgroundColor: 'var(--n-info)'
             }
           }}
         />
       )}
-
       <DialogContent sx={{ padding: '24px 32px 32px' }}>
         {error && (
           <Alert severity="error" sx={{ marginBottom: 2 }}>
@@ -330,14 +335,14 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
           >
             <CheckIcon sx={{ fontSize: 64, color: '#22c55e', marginBottom: 2 }} />
             <Typography variant="h5" sx={{ fontWeight: 600, marginBottom: 1 }}>
-              All Done!
+              {t('misc:quickCategory.allDone')}
             </Typography>
             <Typography color="textSecondary">
-              All transactions have been categorized.
+              {t('misc:quickCategory.allDoneDescription')}
             </Typography>
             {totalProcessed > 0 && (
               <Typography color="textSecondary" sx={{ marginTop: 1 }}>
-                You categorized {totalProcessed} description(s) in this session.
+                {t('misc:quickCategory.sessionInline', { count: totalProcessed })}
               </Typography>
             )}
           </Box>
@@ -354,10 +359,10 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
           >
             <CheckIcon sx={{ fontSize: 64, color: '#22c55e', marginBottom: 2 }} />
             <Typography variant="h5" sx={{ fontWeight: 600, marginBottom: 1 }}>
-              Session Complete!
+              {t('misc:quickCategory.sessionComplete')}
             </Typography>
             <Typography color="textSecondary">
-              You categorized {totalProcessed} description(s).
+              {t('misc:quickCategory.sessionSummary', { count: totalProcessed })}
             </Typography>
           </Box>
         ) : (
@@ -406,11 +411,11 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
                 </Typography>
                 <Box sx={{ display: 'flex', gap: 2, flexShrink: 0, marginLeft: 2 }}>
                   <Chip
-                    label={`${currentDescription.count} transactions`}
+                    label={t('misc:quickCategory.transactionsChip', { count: currentDescription.count })}
                     size="small"
                     sx={{
                       backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                      color: '#3b82f6',
+                      color: 'var(--n-info)',
                       fontWeight: 600
                     }}
                   />
@@ -419,7 +424,7 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
                     size="small"
                     sx={{
                       backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                      color: '#ef4444',
+                      color: 'var(--n-error)',
                       fontWeight: 600
                     }}
                   />
@@ -445,10 +450,10 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
                   <Table size="small" stickyHeader>
                     <TableHead>
                       <TableRow>
-                        <TableCell sx={{ fontWeight: 600, backgroundColor: theme.palette.mode === 'dark' ? alpha(theme.palette.common.white, 0.05) : '#f1f5f9', color: theme.palette.text.secondary }}>Date</TableCell>
-                        <TableCell sx={{ fontWeight: 600, backgroundColor: theme.palette.mode === 'dark' ? alpha(theme.palette.common.white, 0.05) : '#f1f5f9', color: theme.palette.text.secondary }}>Amount</TableCell>
-                        <TableCell sx={{ fontWeight: 600, backgroundColor: theme.palette.mode === 'dark' ? alpha(theme.palette.common.white, 0.05) : '#f1f5f9', color: theme.palette.text.secondary }}>Card</TableCell>
-                        <TableCell sx={{ fontWeight: 600, backgroundColor: theme.palette.mode === 'dark' ? alpha(theme.palette.common.white, 0.05) : '#f1f5f9', color: theme.palette.text.secondary }}>Details</TableCell>
+                        <TableCell sx={{ fontWeight: 600, backgroundColor: theme.palette.mode === 'dark' ? alpha(theme.palette.common.white, 0.05) : '#f1f5f9', color: theme.palette.text.secondary }}>{t('misc:quickCategory.table.date')}</TableCell>
+                        <TableCell sx={{ fontWeight: 600, backgroundColor: theme.palette.mode === 'dark' ? alpha(theme.palette.common.white, 0.05) : '#f1f5f9', color: theme.palette.text.secondary }}>{t('misc:quickCategory.table.amount')}</TableCell>
+                        <TableCell sx={{ fontWeight: 600, backgroundColor: theme.palette.mode === 'dark' ? alpha(theme.palette.common.white, 0.05) : '#f1f5f9', color: theme.palette.text.secondary }}>{t('misc:quickCategory.table.card')}</TableCell>
+                        <TableCell sx={{ fontWeight: 600, backgroundColor: theme.palette.mode === 'dark' ? alpha(theme.palette.common.white, 0.05) : '#f1f5f9', color: theme.palette.text.secondary }}>{t('misc:quickCategory.table.details')}</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
@@ -457,7 +462,7 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
                           <TableCell sx={{ color: theme.palette.text.secondary, fontSize: '13px' }}>
                             {formatDate(tx.date)}
                           </TableCell>
-                          <TableCell sx={{ color: tx.price < 0 ? '#ef4444' : '#22c55e', fontWeight: 600, fontSize: '13px' }}>
+                          <TableCell sx={{ color: tx.price < 0 ? 'var(--n-error)' : '#22c55e', fontWeight: 600, fontSize: '13px' }}>
                             {formatCurrency(Math.abs(tx.price))}
                           </TableCell>
                           <TableCell sx={{ color: theme.palette.text.secondary, fontSize: '13px' }}>
@@ -486,7 +491,7 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
                                   fontSize: '11px',
                                   marginLeft: tx.installments_total && tx.installments_total > 1 ? '4px' : 0,
                                   backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                                  color: '#f59e0b'
+                                  color: 'var(--n-warning)'
                                 }}
                               />
                             )}
@@ -498,7 +503,7 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
                 </TableContainer>
               ) : (
                 <Typography variant="body2" color="textSecondary" sx={{ textAlign: 'center', padding: 2 }}>
-                  No transactions found
+                  {t('misc:quickCategory.noTransactionsFound')}
                 </Typography>
               )}
             </Box>
@@ -518,7 +523,7 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
                   }
                 }}
               >
-                Skip for now
+                {t('misc:quickCategory.skipForNow')}
               </Button>
             </Box>
 
@@ -527,7 +532,7 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
               variant="subtitle2"
               sx={{ color: theme.palette.text.secondary, marginBottom: '12px', fontWeight: 500 }}
             >
-              Select a category:
+              {t('misc:quickCategory.selectCategory')}
             </Typography>
 
             <Box
@@ -546,7 +551,7 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
                   onClick={() => handleCategorySelect(category)}
                   disabled={isSaving}
                   sx={{
-                    backgroundColor: categoryColors[category] || '#3b82f6',
+                    backgroundColor: categoryColors[category] || 'var(--n-info)',
                     color: '#fff',
                     textTransform: 'none',
                     fontWeight: 600,
@@ -556,10 +561,10 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
                     minWidth: 'auto',
                     transition: 'all 0.2s ease-in-out',
                     '&:hover': {
-                      backgroundColor: categoryColors[category] || '#3b82f6',
+                      backgroundColor: categoryColors[category] || 'var(--n-info)',
                       filter: 'brightness(1.1)',
                       transform: 'translateY(-2px)',
-                      boxShadow: `0 4px 12px ${categoryColors[category] || '#3b82f6'}40`
+                      boxShadow: `0 4px 12px ${categoryColors[category] || 'var(--n-info)'}40`
                     },
                     '&:active': {
                       transform: 'translateY(0)'
@@ -589,22 +594,8 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
                     }
                   }}
                   autoFocus
-                  placeholder="New category name"
+                  placeholder={t('misc:quickCategory.newCategoryPlaceholder')}
                   disabled={isSaving}
-                  InputProps={{
-                    endAdornment: (
-                      <InputAdornment position="end">
-                        <IconButton
-                          size="small"
-                          onClick={handleAddNewCategory}
-                          disabled={!newCategoryInput.trim() || isSaving}
-                          sx={{ color: '#22c55e' }}
-                        >
-                          <CheckIcon fontSize="small" />
-                        </IconButton>
-                      </InputAdornment>
-                    )
-                  }}
                   sx={{
                     minWidth: '200px',
                     '& .MuiOutlinedInput-root': {
@@ -620,6 +611,22 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
                       '&.Mui-focused fieldset': {
                         borderColor: '#22c55e'
                       }
+                    }
+                  }}
+                  slotProps={{
+                    input: {
+                      endAdornment: (
+                        <InputAdornment position="end">
+                          <IconButton
+                            size="small"
+                            onClick={handleAddNewCategory}
+                            disabled={!newCategoryInput.trim() || isSaving}
+                            sx={{ color: '#22c55e' }}
+                          >
+                            <CheckIcon fontSize="small" />
+                          </IconButton>
+                        </InputAdornment>
+                      )
                     }
                   }}
                 />
@@ -650,7 +657,7 @@ const QuickCategoryModal: React.FC<QuickCategoryModalProps> = ({
                     }
                   }}
                 >
-                  Add New
+                  {t('misc:quickCategory.addNew')}
                 </Button>
               )}
             </Box>

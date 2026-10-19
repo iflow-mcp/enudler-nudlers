@@ -1,7 +1,8 @@
-import { createApiHandler } from "../utils/apiHandler";
+import { createApiHandler } from "../../../utils/apiHandler";
 import { decrypt } from "../utils/encryption";
 import { getDB } from "../db";
 import { getBillingCycleSql } from "../../../utils/transaction_logic";
+import { getBillingCycleStartDay } from "../utils/scraperUtils";
 import { BANK_VENDORS } from "../../../utils/constants";
 import logger from '../../../utils/logger.js';
 
@@ -120,7 +121,7 @@ const getTransactions = createApiHandler({
             return "Time filter (billingCycle or startDate/endDate) is required unless searching or filtering by uncategorized";
         }
     },
-    query: async (req) => {
+    query: async (req, client) => {
         const {
             q,
             startDate,
@@ -159,18 +160,7 @@ const getTransactions = createApiHandler({
         }
 
         if (availableMonths === 'true') {
-            let billingStartDay = 10;
-            const client = await getDB();
-            try {
-                const settingsResult = await client.query("SELECT value FROM app_settings WHERE key = 'billing_cycle_start_day'");
-                if (settingsResult.rows.length > 0) {
-                    const parsed = parseInt(settingsResult.rows[0].value, 10);
-                    if (!isNaN(parsed)) billingStartDay = parsed;
-                }
-            } finally {
-                client.release();
-            }
-
+            const billingStartDay = await getBillingCycleStartDay(client);
             const cycleSql = getBillingCycleSql(billingStartDay, 'date', 'processed_date');
             return {
                 sql: `SELECT ARRAY_AGG(DISTINCT ${cycleSql}) as months FROM transactions;`,
@@ -183,17 +173,7 @@ const getTransactions = createApiHandler({
 
         // 1. Time Filtering (Billing Cycle or Date Range)
         if (billingCycle) {
-            let billingStartDay = 10;
-            const client = await getDB();
-            try {
-                const settingsResult = await client.query("SELECT value FROM app_settings WHERE key = 'billing_cycle_start_day'");
-                if (settingsResult.rows.length > 0) {
-                    const parsed = parseInt(settingsResult.rows[0].value, 10);
-                    if (!isNaN(parsed)) billingStartDay = parsed;
-                }
-            } finally {
-                client.release();
-            }
+            const billingStartDay = await getBillingCycleStartDay(client);
             const effectiveMonthSql = getBillingCycleSql(billingStartDay, 't.date', 't.processed_date');
             conditions.push(`(${effectiveMonthSql}) = $${paramIndex}`);
             params.push(billingCycle);
@@ -259,13 +239,11 @@ const getTransactions = createApiHandler({
         }
 
         // 5. Bank Account specific filters (supporting transactions_by_bank_account logic)
-        let bankAccountParamIndex = null;
         if (bankAccountId && bankAccountId !== 'null') {
             const bankId = parseInt(bankAccountId, 10);
             if (isNaN(bankId)) {
                 throw new Error('bankAccountId must be a valid number');
             }
-            bankAccountParamIndex = paramIndex;
             conditions.push(`(
                 (co.credential_id = $${paramIndex}) OR
                 (co.linked_bank_account_id = $${paramIndex})
@@ -316,7 +294,6 @@ const getTransactions = createApiHandler({
         FROM transactions t
         LEFT JOIN card_ownership co ON t.vendor = co.vendor AND t.account_number = co.account_number
         LEFT JOIN vendor_credentials vc ON co.credential_id = vc.id
-        LEFT JOIN vendor_credentials ba ON ba.id = ${bankAccountParamIndex ? `$${bankAccountParamIndex}` : 'NULL'}
         ${whereClause}
         ORDER BY t.${sortCol} ${sortDir}, t.identifier, t.vendor
         LIMIT ${limitParam}
@@ -376,7 +353,7 @@ const DESTRUCTIVE_OP_LIMIT = 3; // max calls
 const DESTRUCTIVE_OP_WINDOW_MS = 60 * 60 * 1000; // per hour
 
 const deleteAllTransactions = async (req, res) => {
-    const { confirm } = req.body;
+    const { confirm } = req.body || {};
     if (!confirm) {
         return res.status(400).json({ error: "Confirmation is required to delete all transactions" });
     }

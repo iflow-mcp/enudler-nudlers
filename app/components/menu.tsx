@@ -33,8 +33,8 @@ import TimelineIcon from '@mui/icons-material/Timeline';
 import dynamic from 'next/dynamic';
 import DatabaseIndicator from './DatabaseIndicator';
 import SyncStatusIndicator from './SyncStatusIndicator';
-import { useNotification } from './NotificationContext';
 import RepeatIcon from '@mui/icons-material/Repeat';
+import InsightsIcon from '@mui/icons-material/Insights';
 import TuneIcon from '@mui/icons-material/Tune';
 import LightModeIcon from '@mui/icons-material/LightMode';
 import DarkModeIcon from '@mui/icons-material/DarkMode';
@@ -46,9 +46,8 @@ import VersionIndicator from './VersionIndicator';
 import LockIcon from '@mui/icons-material/Lock';
 import LockOpenIcon from '@mui/icons-material/LockOpen';
 import { useStatus } from '../context/StatusContext';
+import { useTranslation } from 'react-i18next';
 
-const ScrapeModal = dynamic(() => import('./ScrapeModal'), { ssr: false });
-const AccountsModal = dynamic(() => import('./AccountsModal'), { ssr: false });
 const CategoryManagementModal = dynamic(() => import('./CategoryDashboard/components/CategoryManagementModal'), { ssr: false });
 const CardVendorsModal = dynamic(() => import('./CardVendorsModal'), { ssr: false });
 const DatabaseBackupModal = dynamic(() => import('./DatabaseBackupModal'), { ssr: false });
@@ -58,8 +57,8 @@ const SyncStatusModal = dynamic(() => import('./SyncStatusModal'), { ssr: false 
 
 
 interface ResponsiveAppBarProps {
-  currentView?: 'dashboard' | 'summary' | 'budget' | 'chat' | 'audit' | 'recurring' | 'design' | 'breakdown' | 'projection' | 'accounts';
-  onViewChange?: (view: 'dashboard' | 'summary' | 'budget' | 'chat' | 'audit' | 'recurring' | 'design' | 'breakdown' | 'projection' | 'accounts') => void;
+  currentView?: 'dashboard' | 'summary' | 'budget' | 'chat' | 'audit' | 'recurring' | 'design' | 'breakdown' | 'projection' | 'accounts' | 'insights';
+  onViewChange?: (view: 'dashboard' | 'summary' | 'budget' | 'chat' | 'audit' | 'recurring' | 'design' | 'breakdown' | 'projection' | 'accounts' | 'insights') => void;
 }
 
 
@@ -101,11 +100,11 @@ import { useView } from "./Layout";
 
 function ResponsiveAppBar({ currentView = 'summary', onViewChange }: ResponsiveAppBarProps) {
   const theme = useTheme();
+  const { t } = useTranslation('nav');
   const { toggleColorMode, mode } = useColorMode();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const [mobileDrawerOpen, setMobileDrawerOpen] = React.useState(false);
   const [desktopDrawerOpen, setDesktopDrawerOpen] = React.useState(true); // Persistent drawer for desktop
-  const [isScrapeModalOpen, setIsScrapeModalOpen] = React.useState(false);
   const [isCategoryManagementOpen, setIsCategoryManagementOpen] = React.useState(false);
   const [isCardVendorsOpen, setIsCardVendorsOpen] = React.useState(false);
   const [isBackupOpen, setIsBackupOpen] = React.useState(false);
@@ -115,8 +114,6 @@ function ResponsiveAppBar({ currentView = 'summary', onViewChange }: ResponsiveA
   const { syncDrawerOpen, setSyncDrawerOpen, syncDrawerWidth, setSyncDrawerWidth } = useView();
   const { toggleAI, isOpen: isAIOpen } = useAI();
   const { isVaultLocked, setIsVaultModalOpen, lockVault } = useStatus();
-
-  const { showNotification } = useNotification();
 
   const handleDrawerToggle = () => {
     setMobileDrawerOpen(!mobileDrawerOpen);
@@ -169,31 +166,26 @@ function ResponsiveAppBar({ currentView = 'summary', onViewChange }: ResponsiveA
 
   const viewMenuItems = [
 
-    { label: 'Summary', icon: <SummarizeIcon />, view: 'summary' as const, color: 'var(--n-primary)' },
-    { label: 'Transactions', icon: <DashboardIcon />, view: 'dashboard' as const, color: 'var(--n-primary)' },
-    { label: 'Breakdown', icon: <ViewListIcon />, view: 'breakdown' as const, color: 'var(--n-primary)' },
-    { label: 'Recurring', icon: <RepeatIcon />, view: 'recurring' as const, color: 'var(--n-primary)' },
-    { label: 'Projection', icon: <TimelineIcon />, view: 'projection' as const, color: 'var(--n-primary)' },
+    { label: t('view.summary'), icon: <SummarizeIcon />, view: 'summary' as const, color: 'var(--n-primary)' },
+    { label: t('view.transactions'), icon: <DashboardIcon />, view: 'dashboard' as const, color: 'var(--n-primary)' },
+    { label: t('view.breakdown'), icon: <ViewListIcon />, view: 'breakdown' as const, color: 'var(--n-primary)' },
+    { label: t('view.insights'), icon: <InsightsIcon />, view: 'insights' as const, color: 'var(--n-primary)' },
+    { label: t('view.recurring'), icon: <RepeatIcon />, view: 'recurring' as const, color: 'var(--n-primary)' },
+    { label: t('view.projection'), icon: <TimelineIcon />, view: 'projection' as const, color: 'var(--n-primary)' },
 
-    { label: 'Audit', icon: <HistoryIcon />, view: 'audit' as const, color: 'var(--n-primary)' },
+    { label: t('view.audit'), icon: <HistoryIcon />, view: 'audit' as const, color: 'var(--n-primary)' },
   ];
 
 
   const settingsMenuItems: Array<{ label: string; icon: React.ReactNode; action?: () => void; view?: 'accounts'; color?: string }> = [
-    { label: 'Accounts', icon: <PersonIcon />, view: 'accounts' as const, color: 'var(--n-primary)' },
-    { label: 'Categories', icon: <SettingsIcon />, action: () => setIsCategoryManagementOpen(true) },
-    { label: 'Cards', icon: <CreditCardIcon />, action: () => setIsCardVendorsOpen(true) },
-    { label: 'Backup', icon: <BackupIcon />, action: () => setIsBackupOpen(true) },
-    { label: 'Settings', icon: <TuneIcon />, action: () => setIsSettingsOpen(true) },
+    { label: t('view.accounts'), icon: <PersonIcon />, view: 'accounts' as const, color: 'var(--n-primary)' },
+    { label: t('menu.categories'), icon: <SettingsIcon />, action: () => setIsCategoryManagementOpen(true) },
+    { label: t('menu.cards'), icon: <CreditCardIcon />, action: () => setIsCardVendorsOpen(true) },
+    { label: t('menu.backup'), icon: <BackupIcon />, action: () => setIsBackupOpen(true) },
+    { label: t('menu.settings'), icon: <TuneIcon />, action: () => setIsSettingsOpen(true) },
   ];
 
 
-
-  const handleScrapeSuccess = () => {
-    showNotification('Scraping process completed successfully!', 'success');
-    // Dispatch a custom event to trigger data refresh
-    window.dispatchEvent(new CustomEvent('dataRefresh'));
-  };
 
   // Shared drawer content component
   const drawerContent = (isMobile: boolean) => (
@@ -223,7 +215,7 @@ function ResponsiveAppBar({ currentView = 'summary', onViewChange }: ResponsiveA
         {/* Views Section */}
         <Box sx={{ p: 1, pb: 0 }}>
           <Typography sx={{ px: 2, py: 0.5, fontSize: '10px', color: 'text.secondary', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            Views
+            {t('section.views')}
           </Typography>
           <List disablePadding>
             {viewMenuItems.map((item) => (
@@ -272,7 +264,7 @@ function ResponsiveAppBar({ currentView = 'summary', onViewChange }: ResponsiveA
         {/* Settings Section */}
         <Box sx={{ p: 1, pb: 0 }}>
           <Typography sx={{ px: 2, py: 0.5, fontSize: '10px', color: 'text.secondary', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            Settings
+            {t('section.settings')}
           </Typography>
           <List disablePadding>
             {settingsMenuItems.map((item) => (
@@ -373,7 +365,7 @@ function ResponsiveAppBar({ currentView = 'summary', onViewChange }: ResponsiveA
                     transform: 'scale(1.1)'
                   }
                 }}
-                title="AI Assistant"
+                title={t('tooltip.aiAssistant')}
               >
                 <AutoAwesomeIcon />
               </IconButton>
@@ -388,7 +380,7 @@ function ResponsiveAppBar({ currentView = 'summary', onViewChange }: ResponsiveA
                     background: isVaultLocked ? 'rgba(248, 113, 113, 0.1)' : 'rgba(74, 222, 128, 0.1)',
                   }
                 }}
-                title={isVaultLocked ? "Vault Locked - Click to Unlock" : "Vault Unlocked - Click to Lock"}
+                title={isVaultLocked ? t('tooltip.vaultLockedClickToUnlock') : t('tooltip.vaultUnlockedClickToLock')}
               >
                 {isVaultLocked ? <LockIcon /> : <LockOpenIcon />}
               </IconButton>
@@ -408,7 +400,7 @@ function ResponsiveAppBar({ currentView = 'summary', onViewChange }: ResponsiveA
               <IconButton
                 onClick={() => { if (isVaultLocked) { setIsVaultModalOpen(true); } else { lockVault(); } }}
                 sx={{ color: isVaultLocked ? '#f87171' : '#4ade80' }}
-                title={isVaultLocked ? "Vault Locked" : "Vault Unlocked - Click to Lock"}
+                title={isVaultLocked ? t('tooltip.vaultLocked') : t('tooltip.vaultUnlockedClickToLock')}
               >
                 {isVaultLocked ? <LockIcon /> : <LockOpenIcon />}
               </IconButton>
@@ -462,11 +454,6 @@ function ResponsiveAppBar({ currentView = 'summary', onViewChange }: ResponsiveA
       >
         {drawerContent(false)}
       </Drawer>
-      <ScrapeModal
-        isOpen={isScrapeModalOpen}
-        onClose={() => setIsScrapeModalOpen(false)}
-        onSuccess={handleScrapeSuccess}
-      />
       <CategoryManagementModal
         open={isCategoryManagementOpen}
         onClose={() => setIsCategoryManagementOpen(false)}
@@ -476,7 +463,7 @@ function ResponsiveAppBar({ currentView = 'summary', onViewChange }: ResponsiveA
         }}
       />
       <CardVendorsModal
-        isOpen={isCardVendorsOpen}
+        open={isCardVendorsOpen}
         onClose={() => setIsCardVendorsOpen(false)}
       />
       <DatabaseBackupModal

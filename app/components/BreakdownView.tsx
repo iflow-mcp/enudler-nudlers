@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { useTheme } from '@mui/material/styles';
+import { useTheme, type Theme } from '@mui/material/styles';
 import {
     Box,
     Typography,
@@ -13,14 +13,10 @@ import {
     IconButton,
     TextField,
     Autocomplete,
-    Snackbar,
-    Alert,
     FormControlLabel,
     Switch,
-    Button,
     useMediaQuery
 } from '@mui/material';
-import RefreshIcon from '@mui/icons-material/Refresh';
 import DescriptionIcon from '@mui/icons-material/Description';
 import CheckIcon from '@mui/icons-material/Check';
 import CloseIcon from '@mui/icons-material/Close';
@@ -35,7 +31,10 @@ import { useCategories } from './CategoryDashboard/utils/useCategories';
 import { useDateSelection, DateRangeMode } from '../context/DateSelectionContext';
 import { logger } from '../utils/client-logger';
 import { getTableHeaderCellStyle, getTableBodyCellStyle, TABLE_ROW_HOVER_STYLE, getTableRowHoverBackground } from './CategoryDashboard/utils/tableStyles';
-import MobileSortableTable, { SortOption } from './MobileSortableTable';
+import MobileSortableTable from './MobileSortableTable';
+import { useTranslation } from 'react-i18next';
+import { useSnackbar } from './hooks/useSnackbar';
+import SnackbarFeedback from './SnackbarFeedback';
 
 // Maximum date range in years
 const MAX_YEARS_RANGE = 5;
@@ -64,10 +63,11 @@ const formatNumber = (num: number): string => {
 const BreakdownView: React.FC = () => {
     const theme = useTheme();
     const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+    const { t } = useTranslation('views');
 
     const [data, setData] = useState<MonthlySummaryData[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [_error, setError] = useState<string | null>(null);
 
     const {
         selectedYear, setSelectedYear,
@@ -80,7 +80,7 @@ const BreakdownView: React.FC = () => {
         startDate, endDate, billingCycle
     } = useDateSelection();
 
-    const [dateRangeError, setDateRangeError] = useState<string>('');
+    const [_dateRangeError, setDateRangeError] = useState<string>('');
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [modalData, setModalData] = useState<ModalData | undefined>();
     const [loadingDescription, setLoadingDescription] = useState<string | null>(null);
@@ -96,33 +96,29 @@ const BreakdownView: React.FC = () => {
     const pageRef = React.useRef(0);
     const [hasMore, setHasMore] = useState(true);
     const [loadingMore, setLoadingMore] = useState(false);
-    const [total, setTotal] = useState(0);
+    const [_total, setTotal] = useState(0);
     const PAGE_SIZE = 50;
-    const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' }>({
-        open: false,
-        message: '',
-        severity: 'success'
-    });
+    const { snackbar, showSnackbar, hideSnackbar } = useSnackbar();
 
     const validateDateRange = (start: string, end: string): boolean => {
         if (!start || !end) return false;
         const startDateObj = new Date(start);
         const endDateObj = new Date(end);
         if (startDateObj > endDateObj) {
-            setDateRangeError('Start date must be before end date');
+            setDateRangeError(t('breakdown.errorRangeStartBeforeEnd'));
             return false;
         }
         const diffTime = Math.abs(endDateObj.getTime() - startDateObj.getTime());
         const diffYears = diffTime / (1000 * 60 * 60 * 24 * 365);
         if (diffYears > MAX_YEARS_RANGE) {
-            setDateRangeError(`Date range cannot exceed ${MAX_YEARS_RANGE} years`);
+            setDateRangeError(t('breakdown.errorRangeMaxYears', { years: MAX_YEARS_RANGE }));
             return false;
         }
         setDateRangeError('');
         return true;
     };
 
-    const fetchBreakdown = useCallback(async (skipLoadingState = false, isLoadMore = false) => {
+    const fetchBreakdown = useCallback(async (_skipLoadingState = false, isLoadMore = false) => {
         if (dateRangeMode === 'custom') {
             if (!customStartDate || !customEndDate) return;
         } else {
@@ -172,23 +168,24 @@ const BreakdownView: React.FC = () => {
             setHasMore(items.length === PAGE_SIZE);
 
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'An error occurred');
+            setError(err instanceof Error ? err.message : t('breakdown.errorGeneric'));
         } finally {
             setLoading(false);
             setLoadingMore(false);
         }
-    }, [startDate, endDate, billingCycle, dateRangeMode, customStartDate, customEndDate, showBankTransactions, selectedYear, selectedMonth, sortField, sortDirection]);
+    }, [startDate, endDate, billingCycle, dateRangeMode, customStartDate, customEndDate, showBankTransactions, selectedYear, selectedMonth, sortField, sortDirection, t]);
 
     useEffect(() => {
-        // Debounce or just check required fields
-        if (dateRangeMode === 'custom') {
-            if (customStartDate && customEndDate) {
+        queueMicrotask(() => {
+            if (dateRangeMode === 'custom') {
+                if (customStartDate && customEndDate) {
+                    fetchBreakdown(false, false);
+                }
+            } else if (startDate && endDate) {
                 fetchBreakdown(false, false);
             }
-        } else if (startDate && endDate) {
-            fetchBreakdown(false, false);
-        }
-    }, [startDate, endDate, billingCycle, dateRangeMode, customStartDate, customEndDate, selectedYear, selectedMonth, sortField, sortDirection, showBankTransactions]); // Added showBankTransactions here to trigger refetch
+        });
+    }, [startDate, endDate, billingCycle, dateRangeMode, customStartDate, customEndDate, selectedYear, selectedMonth, sortField, sortDirection, showBankTransactions, fetchBreakdown]);
 
     const handleYearChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
         setSelectedYear(event.target.value);
@@ -237,7 +234,7 @@ const BreakdownView: React.FC = () => {
 
     const handleCategorySave = async (description: string) => {
         if (!editCategory.trim()) {
-            setSnackbar({ open: true, message: 'Category cannot be empty', severity: 'error' });
+            showSnackbar(t('breakdown.snackbarCategoryEmpty'), 'error');
             return;
         }
 
@@ -262,15 +259,15 @@ const BreakdownView: React.FC = () => {
                     )
                 );
                 const message = result.transactionsUpdated > 1
-                    ? `Updated ${result.transactionsUpdated} transactions.`
-                    : `Category updated.`;
-                setSnackbar({ open: true, message, severity: 'success' });
+                    ? t('breakdown.snackbarTransactionsUpdated', { count: result.transactionsUpdated })
+                    : t('breakdown.snackbarCategoryUpdated');
+                showSnackbar(message, 'success');
             } else {
-                setSnackbar({ open: true, message: 'Failed to update category', severity: 'error' });
+                showSnackbar(t('breakdown.snackbarFailedUpdateCategory'), 'error');
             }
         } catch (error) {
             logger.error('Error updating category', error);
-            setSnackbar({ open: true, message: 'Error updating category', severity: 'error' });
+            showSnackbar(t('breakdown.snackbarErrorUpdateCategory'), 'error');
         }
         setEditingDescription(null);
     };
@@ -305,7 +302,8 @@ const BreakdownView: React.FC = () => {
 
             setModalData({
                 type: description,
-                data: transactions
+                data: transactions,
+                isBank: false
             });
             setIsModalOpen(true);
         } catch (err) {
@@ -350,8 +348,8 @@ const BreakdownView: React.FC = () => {
             padding: { xs: '12px 8px', sm: '16px 12px', md: '24px 16px' },
         }}>
             <PageHeader
-                title="Breakdown"
-                description="Detailed breakdown of your expenses by description"
+                title={t('breakdown.title')}
+                description={t('breakdown.description')}
                 icon={<SummarizeIcon sx={{ fontSize: '32px', color: '#ffffff' }} />}
                 showDateSelectors={true}
                 dateRangeMode={dateRangeMode}
@@ -370,7 +368,6 @@ const BreakdownView: React.FC = () => {
                 startDate={startDate}
                 endDate={endDate}
             />
-
             <Box sx={{
                 marginTop: '24px',
                 background: theme.palette.mode === 'dark' ? 'rgba(30, 41, 59, 0.4)' : 'rgba(255, 255, 255, 0.95)',
@@ -389,7 +386,7 @@ const BreakdownView: React.FC = () => {
                                 size="small"
                             />
                         }
-                        label="Show Bank Transactions"
+                        label={t('breakdown.showBankTransactions')}
                     />
                 </Box>
 
@@ -399,7 +396,7 @@ const BreakdownView: React.FC = () => {
                     </Box>
                 ) : data.length === 0 ? (
                     <Typography align="center" color="textSecondary" sx={{ py: 4 }}>
-                        No transactions found.
+                        {t('breakdown.noTransactionsFound')}
                     </Typography>
                 ) : (
                     <>
@@ -434,17 +431,17 @@ const BreakdownView: React.FC = () => {
                             {isMobile ? (
                                 <MobileSortableTable
                                     sortOptions={[
-                                        { id: 'card_expenses', label: 'Amount', defaultDirection: 'asc' },
-                                        { id: 'transaction_count', label: 'Count', defaultDirection: 'desc' },
-                                        { id: 'name', label: 'Name', defaultDirection: 'asc' },
-                                        { id: 'category', label: 'Category', defaultDirection: 'asc' },
+                                        { id: 'card_expenses', label: t('breakdown.columnAmount'), defaultDirection: 'asc' },
+                                        { id: 'transaction_count', label: t('breakdown.columnCount'), defaultDirection: 'desc' },
+                                        { id: 'name', label: t('breakdown.columnName'), defaultDirection: 'asc' },
+                                        { id: 'category', label: t('breakdown.columnCategory'), defaultDirection: 'asc' },
                                     ]}
                                     rows={data}
                                     loading={loading && data.length === 0}
-                                    emptyMessage="No transactions found"
+                                    emptyMessage={t('breakdown.noTransactionsFoundShort')}
                                     sortField={sortField}
                                     sortDirection={sortDirection}
-                                    onSort={(field, direction) => {
+                                    onSort={(field, _direction) => {
                                         handleSortChange(field as SortField);
                                     }}
                                     rowKey={(row) => row.description || ''}
@@ -478,13 +475,13 @@ const BreakdownView: React.FC = () => {
                                             }}
                                         >
                                             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                                <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>TOTAL</Typography>
+                                                <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>{t('breakdown.totalLabel')}</Typography>
                                                 <Box sx={{ textAlign: 'right' }}>
                                                     <Typography variant="h6" sx={{ fontWeight: 900, color: 'primary.main' }}>
                                                         {`${totals.amount >= 0 ? '+' : ''}₪${formatNumber(Math.abs(totals.amount))}`}
                                                     </Typography>
                                                     <Typography variant="caption" color="textSecondary">
-                                                        {totals.count} transactions
+                                                        {t('breakdown.transactionsCount', { count: totals.count })}
                                                     </Typography>
                                                 </Box>
                                             </Box>
@@ -507,7 +504,7 @@ const BreakdownView: React.FC = () => {
                                                 }}
                                             >
                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                                    Description
+                                                    {t('breakdown.columnDescription')}
                                                     {sortField === 'name' && (
                                                         sortDirection === 'asc' ? <ArrowUpwardIcon sx={{ fontSize: 16 }} /> : <ArrowDownwardIcon sx={{ fontSize: 16 }} />
                                                     )}
@@ -525,7 +522,7 @@ const BreakdownView: React.FC = () => {
                                                 }}
                                             >
                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                                    Category
+                                                    {t('breakdown.columnCategory')}
                                                     {sortField === 'category' && (
                                                         sortDirection === 'asc' ? <ArrowUpwardIcon sx={{ fontSize: 16 }} /> : <ArrowDownwardIcon sx={{ fontSize: 16 }} />
                                                     )}
@@ -544,7 +541,7 @@ const BreakdownView: React.FC = () => {
                                                 }}
                                             >
                                                 <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5 }}>
-                                                    Count
+                                                    {t('breakdown.columnCount')}
                                                     {sortField === 'transaction_count' && (
                                                         sortDirection === 'asc' ? <ArrowUpwardIcon sx={{ fontSize: 16 }} /> : <ArrowDownwardIcon sx={{ fontSize: 16 }} />
                                                     )}
@@ -563,7 +560,7 @@ const BreakdownView: React.FC = () => {
                                                 }}
                                             >
                                                 <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 0.5 }}>
-                                                    Amount
+                                                    {t('breakdown.columnAmount')}
                                                     {sortField === 'card_expenses' && (
                                                         sortDirection === 'asc' ? <ArrowUpwardIcon sx={{ fontSize: 16 }} /> : <ArrowDownwardIcon sx={{ fontSize: 16 }} />
                                                     )}
@@ -608,10 +605,10 @@ const BreakdownView: React.FC = () => {
                                                                     options={availableCategories}
                                                                     size="small"
                                                                     sx={{ minWidth: 150 }}
-                                                                    renderInput={(params) => <TextField {...params} autoFocus placeholder="Category" />}
+                                                                    renderInput={(params) => <TextField {...params} autoFocus placeholder={t('breakdown.categoryPlaceholder')} />}
                                                                 />
                                                                 <IconButton size="small" onClick={() => handleCategorySave(row.description!)} sx={{ color: '#4ADE80' }}><CheckIcon /></IconButton>
-                                                                <IconButton size="small" onClick={handleCategoryCancel} sx={{ color: '#ef4444' }}><CloseIcon /></IconButton>
+                                                                <IconButton size="small" onClick={handleCategoryCancel} sx={{ color: 'var(--n-error)' }}><CloseIcon /></IconButton>
                                                             </Box>
                                                         ) : (
                                                             <span
@@ -621,12 +618,12 @@ const BreakdownView: React.FC = () => {
                                                                     borderRadius: '6px',
                                                                     fontSize: '13px',
                                                                     cursor: 'pointer',
-                                                                    color: '#3b82f6',
+                                                                    color: 'var(--n-info)',
                                                                     fontWeight: 500
                                                                 }}
                                                                 onClick={() => handleCategoryEditClick(row.description!, row.category || '')}
                                                             >
-                                                                {row.category || 'Uncategorized'}
+                                                                {row.category || t('breakdown.uncategorized')}
                                                             </span>
                                                         )}
                                                     </div>
@@ -659,15 +656,21 @@ const BreakdownView: React.FC = () => {
                                             zIndex: 10,
                                             boxShadow: '0 -2px 10px rgba(0,0,0,0.05)'
                                         }}>
-                                            <TableCell style={tableBodyCellStyle}><Typography fontWeight={700}>TOTAL</Typography></TableCell>
+                                            <TableCell style={tableBodyCellStyle}><Typography sx={{
+                                                fontWeight: 700
+                                            }}>{t('breakdown.totalLabel')}</Typography></TableCell>
                                             <TableCell style={tableBodyCellStyle} />
                                             <TableCell align="center" style={tableBodyCellStyle}>
-                                                <Typography fontWeight={700} color="textSecondary">
+                                                <Typography color="textSecondary" sx={{
+                                                    fontWeight: 700
+                                                }}>
                                                     {totals.count}
                                                 </Typography>
                                             </TableCell>
                                             <TableCell align="right" style={tableBodyCellStyle}>
-                                                <Typography fontWeight={700} color="primary">
+                                                <Typography color="primary" sx={{
+                                                    fontWeight: 700
+                                                }}>
                                                     {`${totals.amount >= 0 ? '+' : ''}₪${formatNumber(Math.abs(totals.amount))}`}
                                                 </Typography>
                                             </TableCell>
@@ -683,7 +686,7 @@ const BreakdownView: React.FC = () => {
                             {!hasMore && data.length > 0 && (
                                 <Box sx={{ p: 4, textAlign: 'center' }}>
                                     <Typography variant="body2" sx={{ color: 'text.secondary', fontWeight: 500 }}>
-                                        That's all for this period ✨
+                                        {t('breakdown.endOfPeriod')}
                                     </Typography>
                                 </Box>
                             )}
@@ -691,7 +694,6 @@ const BreakdownView: React.FC = () => {
                     </>
                 )}
             </Box>
-
             {modalData && (
                 <ExpensesModal
                     open={isModalOpen}
@@ -702,24 +704,20 @@ const BreakdownView: React.FC = () => {
                     currentMonth={dateRangeMode === "custom" ? `${customStartDate}` : `${selectedYear}-${selectedMonth}`}
                 />
             )}
-
-            <Snackbar
-                open={snackbar.open}
+            <SnackbarFeedback
+                snackbar={snackbar}
+                onClose={hideSnackbar}
                 autoHideDuration={5000}
-                onClose={() => setSnackbar({ ...snackbar, open: false })}
                 anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-            >
-                <Alert onClose={() => setSnackbar({ ...snackbar, open: false })} severity={snackbar.severity} sx={{ width: "100%", borderRadius: "12px" }}>
-                    {snackbar.message}
-                </Alert>
-            </Snackbar>
+                alertSx={{ width: "100%", borderRadius: "12px" }}
+            />
         </Box>
     );
 };
 
 interface BreakdownMobileCardProps {
     row: MonthlySummaryData;
-    theme: any;
+    theme: Theme;
     loadingDescription: string | null;
     handleDescriptionClick: (description: string) => void;
     editingDescription: string | null;
@@ -734,9 +732,9 @@ interface BreakdownMobileCardProps {
 // Card content component for MobileSortableTable (without Paper wrapper)
 const BreakdownMobileCardContent = ({
     row,
-    theme,
+    theme: _theme,
     loadingDescription,
-    handleDescriptionClick,
+    handleDescriptionClick: _handleDescriptionClick,
     editingDescription,
     editCategory,
     setEditCategory,
@@ -745,6 +743,7 @@ const BreakdownMobileCardContent = ({
     handleCategoryCancel,
     handleCategoryEditClick
 }: BreakdownMobileCardProps) => {
+    const { t } = useTranslation('views');
     return (
         <Box>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1.5 }}>
@@ -785,10 +784,10 @@ const BreakdownMobileCardContent = ({
                                 options={availableCategories}
                                 size="small"
                                 sx={{ minWidth: 120, '& .MuiInputBase-root': { fontSize: '12px', py: 0.5 } }}
-                                renderInput={(params) => <TextField {...params} autoFocus placeholder="Category" />}
+                                renderInput={(params) => <TextField {...params} autoFocus placeholder={t('breakdown.categoryPlaceholder')} />}
                             />
                             <IconButton size="small" onClick={() => handleCategorySave(row.description!)} sx={{ color: '#4ADE80' }}><CheckIcon fontSize="small" /></IconButton>
-                            <IconButton size="small" onClick={handleCategoryCancel} sx={{ color: '#ef4444' }}><CloseIcon fontSize="small" /></IconButton>
+                            <IconButton size="small" onClick={handleCategoryCancel} sx={{ color: 'var(--n-error)' }}><CloseIcon fontSize="small" /></IconButton>
                         </Box>
                     ) : (
                         <span
@@ -798,117 +797,22 @@ const BreakdownMobileCardContent = ({
                                 borderRadius: '6px',
                                 fontSize: '11px',
                                 cursor: 'pointer',
-                                color: '#3b82f6',
+                                color: 'var(--n-info)',
                                 fontWeight: 600
                             }}
                             onClick={() => handleCategoryEditClick(row.description!, row.category || '')}
                         >
-                            {row.category || 'Uncategorized'}
+                            {row.category || t('breakdown.uncategorized')}
                         </span>
                     )}
                 </div>
                 <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600 }}>
-                    {row.transaction_count} items
+                    {t('breakdown.itemsCount', { count: row.transaction_count })}
                 </Typography>
             </Box>
         </Box>
     );
 };
 
-const BreakdownMobileCard = ({
-    row,
-    theme,
-    loadingDescription,
-    handleDescriptionClick,
-    editingDescription,
-    editCategory,
-    setEditCategory,
-    availableCategories,
-    handleCategorySave,
-    handleCategoryCancel,
-    handleCategoryEditClick
-}: BreakdownMobileCardProps) => {
-    return (
-        <Paper
-            elevation={0}
-            onClick={() => handleDescriptionClick(row.description as string)}
-            sx={{
-                p: 2,
-                borderRadius: '16px',
-                border: `1px solid ${theme.palette.divider}`,
-                background: theme.palette.mode === 'dark' ? 'rgba(30, 41, 59, 0.4)' : 'rgba(255, 255, 255, 0.6)',
-                backdropFilter: 'blur(10px)',
-                cursor: 'pointer',
-                transition: 'transform 0.2s',
-                '&:active': { transform: 'scale(0.98)' }
-            }}
-        >
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1.5 }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1 }}>
-                    {loadingDescription === row.description ? (
-                        <CircularProgress size={16} />
-                    ) : (
-                        <DescriptionIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
-                    )}
-                    <Typography variant="subtitle2" sx={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {row.description}
-                    </Typography>
-                </Box>
-                <Typography
-                    variant="subtitle2"
-                    sx={{
-                        fontWeight: 800,
-                        color: row.amount && row.amount >= 0 ? '#10B981' : '#F43F5E',
-                        ml: 2
-                    }}
-                >
-                    {row.amount !== undefined
-                        ? `${row.amount >= 0 ? '+' : ''}₪${formatNumber(Math.abs(row.amount))}`
-                        : `₪${formatNumber(row.card_expenses)}`
-                    }
-                </Typography>
-            </Box>
-
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div onClick={(e) => e.stopPropagation()}>
-                    {editingDescription === row.description ? (
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                            <Autocomplete
-                                value={editCategory}
-                                onChange={(event, newValue) => setEditCategory(newValue || '')}
-                                onInputChange={(event, newInputValue) => setEditCategory(newInputValue)}
-                                freeSolo
-                                options={availableCategories}
-                                size="small"
-                                sx={{ minWidth: 120, '& .MuiInputBase-root': { fontSize: '12px', py: 0.5 } }}
-                                renderInput={(params) => <TextField {...params} autoFocus placeholder="Category" />}
-                            />
-                            <IconButton size="small" onClick={() => handleCategorySave(row.description!)} sx={{ color: '#4ADE80' }}><CheckIcon fontSize="small" /></IconButton>
-                            <IconButton size="small" onClick={handleCategoryCancel} sx={{ color: '#ef4444' }}><CloseIcon fontSize="small" /></IconButton>
-                        </Box>
-                    ) : (
-                        <span
-                            style={{
-                                background: 'rgba(59, 130, 246, 0.1)',
-                                padding: '4px 10px',
-                                borderRadius: '6px',
-                                fontSize: '11px',
-                                cursor: 'pointer',
-                                color: '#3b82f6',
-                                fontWeight: 600
-                            }}
-                            onClick={() => handleCategoryEditClick(row.description!, row.category || '')}
-                        >
-                            {row.category || 'Uncategorized'}
-                        </span>
-                    )}
-                </div>
-                <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600 }}>
-                    {row.transaction_count} items
-                </Typography>
-            </Box>
-        </Paper>
-    );
-};
 
 export default BreakdownView;

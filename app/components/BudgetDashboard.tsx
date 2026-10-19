@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { logger } from '../utils/client-logger';
 import IconButton from '@mui/material/IconButton';
 import Box from '@mui/material/Box';
-import RefreshIcon from '@mui/icons-material/Refresh';
 import AddIcon from '@mui/icons-material/Add';
 import EditIcon from '@mui/icons-material/Edit';
 import PageHeader from './PageHeader';
@@ -15,8 +14,6 @@ import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import TrendingDownIcon from '@mui/icons-material/TrendingDown';
 import WarningIcon from '@mui/icons-material/Warning';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
-import CalendarMonthIcon from '@mui/icons-material/CalendarMonth';
-import DateRangeIcon from '@mui/icons-material/DateRange';
 import Dialog from '@mui/material/Dialog';
 import DialogTitle from '@mui/material/DialogTitle';
 import DialogContent from '@mui/material/DialogContent';
@@ -26,10 +23,11 @@ import TextField from '@mui/material/TextField';
 import Autocomplete, { createFilterOptions } from '@mui/material/Autocomplete';
 import LinearProgress from '@mui/material/LinearProgress';
 import CircularProgress from '@mui/material/CircularProgress';
-import useMediaQuery from '@mui/material/useMediaQuery';
 import { useTheme } from '@mui/material/styles';
 import { useNotification } from './NotificationContext';
 import { useDateSelection, DateRangeMode } from '../context/DateSelectionContext';
+import { useLocale } from '../context/LocaleContext';
+import { useTranslation } from 'react-i18next';
 import BudgetRow from './BudgetDashboard/BudgetRow';
 
 // Helper function removed (handled by context)
@@ -62,19 +60,23 @@ interface TotalSpendBudget {
 
 
 
-const currencyFormatter = new Intl.NumberFormat('he-IL', {
-  style: 'currency',
-  currency: 'ILS',
-  minimumFractionDigits: 0,
-  maximumFractionDigits: 0
-});
-
-const formatCurrency = (amount: number): string => {
-  return currencyFormatter.format(amount);
-};
-
 const BudgetDashboard: React.FC = () => {
   const theme = useTheme();
+  const { t } = useTranslation(['views', 'common']);
+  const { locale } = useLocale();
+  const dateLocale = locale === 'he' ? 'he-IL' : 'en-US';
+
+  const currencyFormatter = React.useMemo(() => new Intl.NumberFormat(dateLocale, {
+    style: 'currency',
+    currency: 'ILS',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0
+  }), [dateLocale]);
+
+  const formatCurrency = React.useCallback((amount: number): string => {
+    return currencyFormatter.format(amount);
+  }, [currencyFormatter]);
+
   const {
     selectedYear, setSelectedYear,
     selectedMonth, setSelectedMonth,
@@ -83,7 +85,7 @@ const BudgetDashboard: React.FC = () => {
     customEndDate, setCustomEndDate,
     uniqueYears,
     uniqueMonths,
-    startDate, endDate, billingCycle
+    startDate, endDate
   } = useDateSelection();
 
   const handleYearChange = (e: React.ChangeEvent<HTMLSelectElement>) => setSelectedYear(e.target.value);
@@ -127,10 +129,10 @@ const BudgetDashboard: React.FC = () => {
       return data;
     } catch (error) {
       logger.error('Error fetching budgets', error as Error);
-      showNotification('Failed to load budgets', 'error');
+      showNotification(t('budget.errorLoadBudgets'), 'error');
       return [];
     }
-  }, [showNotification]);
+  }, [showNotification, t]);
 
   const fetchSpendingData = useCallback(async (year: string, month: string, mode: DateRangeMode, budgetList: Budget[]) => {
     setLoading(true);
@@ -149,7 +151,7 @@ const BudgetDashboard: React.FC = () => {
       const data = await response.json();
 
       const budgetsWithData: BudgetWithSpending[] = budgetList.map(budget => {
-        const spendingData = data.categories.find((c: any) => c.category === budget.category);
+        const spendingData = data.categories.find((c: { category: string; actual_spent?: number }) => c.category === budget.category);
         const actualSpent = spendingData?.actual_spent || 0;
         const remaining = budget.budget_limit - actualSpent;
         const percentUsed = budget.budget_limit > 0 ? (actualSpent / budget.budget_limit) * 100 : 0;
@@ -201,11 +203,10 @@ const BudgetDashboard: React.FC = () => {
       // If we have selected dates from context, fetch data
       if (startDate && endDate && budgetList) {
         fetchSpendingData(selectedYear, selectedMonth, dateRangeMode, budgetList);
-        setLoading(false);
       }
     };
     init();
-  }, [startDate, endDate, dateRangeMode, fetchBudgets, fetchAllCategories, fetchSpendingData]);
+  }, [startDate, endDate, dateRangeMode, fetchBudgets, fetchAllCategories, fetchSpendingData, selectedMonth, selectedYear]);
 
   const handleRefresh = async () => {
     const budgetList = await fetchBudgets();
@@ -216,13 +217,13 @@ const BudgetDashboard: React.FC = () => {
 
   const handleSaveBudget = async () => {
     if (!newBudgetLimit || parseFloat(newBudgetLimit) <= 0) {
-      showNotification('Please enter a valid budget limit', 'error');
+      showNotification(t('budget.errorInvalidLimit'), 'error');
       return;
     }
 
     const category = editingBudget?.category || newBudgetCategory;
     if (!category) {
-      showNotification('Please select a category', 'error');
+      showNotification(t('budget.errorSelectCategory'), 'error');
       return;
     }
 
@@ -239,7 +240,7 @@ const BudgetDashboard: React.FC = () => {
 
       if (!response.ok) throw new Error('Failed to save budget');
 
-      showNotification(editingBudget ? 'Budget updated successfully' : 'Budget created successfully', 'success');
+      showNotification(editingBudget ? t('budget.successUpdated') : t('budget.successCreated'), 'success');
       setIsAddModalOpen(false);
       setEditingBudget(null);
       setNewBudgetCategory('');
@@ -252,14 +253,14 @@ const BudgetDashboard: React.FC = () => {
       }
     } catch (error) {
       logger.error('Error saving budget', error as Error);
-      showNotification('Failed to save budget', 'error');
+      showNotification(t('budget.errorSaveBudget'), 'error');
     } finally {
       setSavingBudget(false);
     }
   };
 
   const handleDeleteBudget = async (budgetId: number) => {
-    if (!confirm('Are you sure you want to delete this budget?')) return;
+    if (!confirm(t('budget.confirmDeleteBudget'))) return;
 
     try {
       const response = await fetch(`/api/budgets/${budgetId}`, {
@@ -268,14 +269,14 @@ const BudgetDashboard: React.FC = () => {
 
       if (!response.ok) throw new Error('Failed to delete budget');
 
-      showNotification('Budget deleted successfully', 'success');
+      showNotification(t('budget.successDeleted'), 'success');
       const budgetList = await fetchBudgets();
       if (selectedYear && selectedMonth) {
         fetchSpendingData(selectedYear, selectedMonth, dateRangeMode, budgetList);
       }
     } catch (error) {
       logger.error('Error deleting budget', error as Error);
-      showNotification('Failed to delete budget', 'error');
+      showNotification(t('budget.errorDeleteBudget'), 'error');
     }
   };
 
@@ -299,7 +300,7 @@ const BudgetDashboard: React.FC = () => {
 
   const handleSaveTotalBudget = async () => {
     if (!newTotalBudgetLimit || parseFloat(newTotalBudgetLimit) <= 0) {
-      showNotification('Please enter a valid budget limit', 'error');
+      showNotification(t('budget.errorInvalidLimit'), 'error');
       return;
     }
 
@@ -315,7 +316,7 @@ const BudgetDashboard: React.FC = () => {
 
       if (!response.ok) throw new Error('Failed to save total budget');
 
-      showNotification('Total credit card budget saved successfully', 'success');
+      showNotification(t('budget.successTotalSaved'), 'success');
       setIsTotalBudgetModalOpen(false);
       setNewTotalBudgetLimit('');
 
@@ -325,14 +326,14 @@ const BudgetDashboard: React.FC = () => {
       }
     } catch (error) {
       logger.error('Error saving total budget', error as Error);
-      showNotification('Failed to save total budget', 'error');
+      showNotification(t('budget.errorSaveTotalBudget'), 'error');
     } finally {
       setSavingTotalBudget(false);
     }
   };
 
   const handleDeleteTotalBudget = async () => {
-    if (!confirm('Are you sure you want to remove the total credit card budget?')) return;
+    if (!confirm(t('budget.confirmRemoveTotalBudget'))) return;
 
     try {
       const response = await fetch('/api/reports/total-budget', {
@@ -341,7 +342,7 @@ const BudgetDashboard: React.FC = () => {
 
       if (!response.ok) throw new Error('Failed to delete total budget');
 
-      showNotification('Total credit card budget removed', 'success');
+      showNotification(t('budget.successTotalRemoved'), 'success');
       setTotalSpendBudget(null);
 
       // Refresh data
@@ -350,15 +351,8 @@ const BudgetDashboard: React.FC = () => {
       }
     } catch (error) {
       logger.error('Error deleting total budget', error as Error);
-      showNotification('Failed to remove total budget', 'error');
+      showNotification(t('budget.errorRemoveTotalBudget'), 'error');
     }
-  };
-
-  const getProgressColor = (percentUsed: number): string => {
-    if (percentUsed >= 100) return theme.palette.error.main;
-    if (percentUsed >= 80) return theme.palette.warning.main;
-    if (percentUsed >= 60) return theme.palette.warning.light;
-    return theme.palette.success.main;
   };
 
   const overBudgetCount = budgetsWithSpending.filter(b => b.is_over_budget).length;
@@ -366,9 +360,6 @@ const BudgetDashboard: React.FC = () => {
   const totalSpent = budgetsWithSpending.reduce((sum, b) => sum + b.actual_spent, 0);
   const totalRemaining = totalBudget - totalSpent;
   const totalPercentUsed = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
-
-
-  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
   return (
     <Box sx={{
@@ -402,7 +393,6 @@ const BudgetDashboard: React.FC = () => {
           zIndex: 0
         }} />
       </Box>
-
       <Box sx={{
         padding: { xs: '12px 8px', sm: '16px 12px', md: '24px 16px' },
         maxWidth: '1440px',
@@ -411,16 +401,16 @@ const BudgetDashboard: React.FC = () => {
         zIndex: 1
       }}>
         <PageHeader
-          title="Monthly Budgets"
-          description="Manage your monthly spending limits and track progress"
+          title={t('budget.title')}
+          description={t('budget.description')}
           icon={<SavingsIcon sx={{ fontSize: '32px', color: '#ffffff' }} />}
           stats={
             <Box>
               <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
-                Total Budget
+                {t('budget.totalBudget')}
               </Typography>
               <Typography variant="h5" sx={{ fontWeight: 800, color: 'primary.main', lineHeight: 1, mt: 0.5 }}>
-                ₪{new Intl.NumberFormat('he-IL').format(totalBudget)}
+                ₪{new Intl.NumberFormat(dateLocale).format(totalBudget)}
               </Typography>
             </Box>
           }
@@ -501,10 +491,10 @@ const BudgetDashboard: React.FC = () => {
                 </Box>
                 <Box>
                   <Typography variant="h6" sx={{ fontWeight: 800, color: 'var(--n-text-primary)', lineHeight: 1.2 }}>
-                    Total Credit Card Budget
+                    {t('budget.totalCreditCardBudget')}
                   </Typography>
                   <Typography variant="caption" sx={{ color: 'var(--n-text-muted)', fontWeight: 600 }}>
-                    Overall limit across cards
+                    {t('budget.overallLimitAcrossCards')}
                   </Typography>
                 </Box>
               </Box>
@@ -527,12 +517,12 @@ const BudgetDashboard: React.FC = () => {
                           color: (totalSpendBudget.remaining ?? 0) >= 0 ? 'var(--n-success)' : 'var(--n-error)'
                         }}>
                           {(totalSpendBudget.remaining ?? 0) >= 0
-                            ? `${formatCurrency(totalSpendBudget.remaining ?? 0)} left`
-                            : `${formatCurrency(Math.abs(totalSpendBudget.remaining ?? 0))} over`
+                            ? t('budget.leftAmount', { amount: formatCurrency(totalSpendBudget.remaining ?? 0) })
+                            : t('budget.overAmount', { amount: formatCurrency(Math.abs(totalSpendBudget.remaining ?? 0)) })
                           }
                         </Typography>
                         <Typography variant="caption" sx={{ color: 'var(--n-text-muted)', fontWeight: 700 }}>
-                          {totalSpendBudget.percent_used?.toFixed(1)}% used
+                          {t('budget.percentUsed', { percent: totalSpendBudget.percent_used?.toFixed(1) })}
                         </Typography>
                       </Box>
                     </Box>
@@ -590,7 +580,7 @@ const BudgetDashboard: React.FC = () => {
                     className="n-btn n-btn-primary"
                     sx={{ borderRadius: '12px', textTransform: 'none' }}
                   >
-                    Set Total Budget
+                    {t('budget.setTotalBudget')}
                   </Button>
                 </Box>
               )}
@@ -606,25 +596,25 @@ const BudgetDashboard: React.FC = () => {
             }}>
               {[
                 {
-                  label: 'Category Budgets Total',
+                  label: t('budget.categoryBudgetsTotal'),
                   value: totalBudget,
                   icon: <SavingsIcon />,
                   color: 'var(--n-primary)',
-                  subValue: `Spent: ${formatCurrency(totalSpent)} (${Math.round(totalPercentUsed)}%)`
+                  subValue: t('budget.spentSummary', { amount: formatCurrency(totalSpent), percent: Math.round(totalPercentUsed) })
                 },
                 {
-                  label: 'Remaining This Month',
+                  label: t('budget.remainingThisMonth'),
                   value: Math.abs(totalRemaining),
                   icon: totalRemaining >= 0 ? <TrendingUpIcon /> : <TrendingDownIcon />,
                   color: totalRemaining >= 0 ? 'var(--n-success)' : 'var(--n-error)',
-                  subValue: totalRemaining < 0 ? 'Over limit' : 'Under limit'
+                  subValue: totalRemaining < 0 ? t('budget.overLimit') : t('budget.underLimit')
                 },
                 {
-                  label: 'Status',
-                  value: overBudgetCount > 0 ? `${overBudgetCount} Over` : 'On Track',
+                  label: t('budget.status'),
+                  value: overBudgetCount > 0 ? t('budget.overCount', { count: overBudgetCount }) : t('budget.onTrack'),
                   icon: overBudgetCount > 0 ? <WarningIcon /> : <CheckCircleIcon />,
                   color: overBudgetCount > 0 ? 'var(--n-warning)' : 'var(--n-success)',
-                  subValue: `${budgets.length} budgets set`,
+                  subValue: t('budget.budgetsSet', { count: budgets.length }),
                   isText: true
                 }
               ].map((item, idx) => (
@@ -688,10 +678,10 @@ const BudgetDashboard: React.FC = () => {
                     gap: '8px'
                   }}>
                     <SavingsIcon style={{ fontSize: '20px' }} />
-                    Budget Limits
+                    {t('budget.budgetLimits')}
                   </Box>
                   <Typography variant="caption" sx={{ color: 'var(--n-text-muted)', fontWeight: 600 }}>
-                    {budgets.length} categories
+                    {t('budget.categoriesCount', { count: budgets.length })}
                   </Typography>
                 </Box>
 
@@ -726,25 +716,26 @@ const BudgetDashboard: React.FC = () => {
                 border: `2px dashed ${theme.palette.divider}`
               }}>
                 <SavingsIcon style={{ fontSize: '64px', color: theme.palette.text.disabled, marginBottom: '16px' }} />
-                <h3 style={{ color: theme.palette.text.secondary, margin: '0 0 8px' }}>No Budgets Set</h3>
+                <h3 style={{ color: theme.palette.text.secondary, margin: '0 0 8px' }}>{t('budget.noBudgetsTitle')}</h3>
                 <p style={{ color: theme.palette.text.secondary, margin: 0 }}>
-                  Start tracking your spending by adding a monthly budget for your categories
+                  {t('budget.noBudgetsHint')}
                 </p>
               </div>
             )}
           </>
         )}
       </Box>
-
       {/* Add/Edit Budget Modal */}
       <Dialog
         open={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
-        PaperProps={{
-          style: {
-            borderRadius: '24px',
-            padding: '8px',
-            minWidth: '400px'
+        slotProps={{
+          paper: {
+            style: {
+              borderRadius: '24px',
+              padding: '8px',
+              minWidth: '400px'
+            }
           }
         }}
       >
@@ -755,7 +746,7 @@ const BudgetDashboard: React.FC = () => {
           fontWeight: 700
         }}>
           <SavingsIcon style={{ color: theme.palette.success.main }} />
-          {editingBudget ? 'Edit Budget' : 'Add Budget'}
+          {editingBudget ? t('budget.editBudget') : t('budget.addBudget')}
         </DialogTitle>
         <DialogContent>
           <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -802,7 +793,7 @@ const BudgetDashboard: React.FC = () => {
                     <li {...props}>
                       {isNewOption ? (
                         <span style={{ color: theme.palette.success.main, fontWeight: 600 }}>
-                          + Add "{option}"
+                          {t('budget.addCategoryOption', { value: option })}
                         </span>
                       ) : (
                         option
@@ -814,28 +805,30 @@ const BudgetDashboard: React.FC = () => {
                 renderInput={(params) => (
                   <TextField
                     {...params}
-                    label="Category"
-                    placeholder="Select or type a new category"
+                    label={t('budget.categoryLabel')}
+                    placeholder={t('budget.categoryPlaceholder')}
                   />
                 )}
               />
             )}
             {editingBudget && (
               <TextField
-                label="Category"
+                label={t('budget.categoryLabel')}
                 value={editingBudget.category}
                 disabled
                 fullWidth
               />
             )}
             <TextField
-              label="Monthly Budget Limit"
+              label={t('budget.monthlyBudgetLimit')}
               type="number"
               value={newBudgetLimit}
               onChange={(e) => setNewBudgetLimit(e.target.value)}
               fullWidth
-              InputProps={{
-                startAdornment: <span style={{ color: theme.palette.text.secondary, marginRight: '8px' }}>₪</span>
+              slotProps={{
+                input: {
+                  startAdornment: <span style={{ color: theme.palette.text.secondary, marginRight: '8px' }}>₪</span>
+                }
               }}
             />
             <div style={{
@@ -845,7 +838,7 @@ const BudgetDashboard: React.FC = () => {
               fontSize: '14px',
               color: theme.palette.success.main
             }}>
-              💡 This budget applies to every month - no need to set it up monthly!
+              {t('budget.appliesEveryMonth')}
             </div>
           </div>
         </DialogContent>
@@ -854,7 +847,7 @@ const BudgetDashboard: React.FC = () => {
             onClick={() => setIsAddModalOpen(false)}
             startIcon={<CloseIcon />}
           >
-            Cancel
+            {t('common:actions.cancel')}
           </Button>
           <Button
             onClick={handleSaveBudget}
@@ -868,20 +861,21 @@ const BudgetDashboard: React.FC = () => {
               }
             }}
           >
-            {savingBudget ? 'Saving...' : 'Save Budget'}
+            {savingBudget ? t('common:status.saving') : t('budget.saveBudget')}
           </Button>
         </DialogActions>
       </Dialog>
-
       {/* Total Spend Budget Modal */}
       <Dialog
         open={isTotalBudgetModalOpen}
         onClose={() => setIsTotalBudgetModalOpen(false)}
-        PaperProps={{
-          style: {
-            borderRadius: '24px',
-            padding: '8px',
-            minWidth: '400px'
+        slotProps={{
+          paper: {
+            style: {
+              borderRadius: '24px',
+              padding: '8px',
+              minWidth: '400px'
+            }
           }
         }}
       >
@@ -902,21 +896,23 @@ const BudgetDashboard: React.FC = () => {
           }}>
             <SavingsIcon style={{ color: theme.palette.common.white, fontSize: '24px' }} />
           </div>
-          {totalSpendBudget?.is_set ? 'Edit Total Spend Budget' : 'Set Total Spend Budget'}
+          {totalSpendBudget?.is_set ? t('budget.editTotalSpendBudget') : t('budget.setTotalSpendBudget')}
         </DialogTitle>
         <DialogContent>
           <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
             <TextField
-              label="Total Monthly Spending Limit"
+              label={t('budget.totalMonthlySpendingLimit')}
               type="number"
               value={newTotalBudgetLimit}
               onChange={(e) => setNewTotalBudgetLimit(e.target.value)}
               fullWidth
               autoFocus
-              InputProps={{
-                startAdornment: <span style={{ color: theme.palette.text.secondary, marginRight: '8px' }}>₪</span>
+              helperText={t('budget.totalLimitHelper')}
+              slotProps={{
+                input: {
+                  startAdornment: <span style={{ color: theme.palette.text.secondary, marginRight: '8px' }}>₪</span>
+                }
               }}
-              helperText="Maximum amount you want to spend across all credit cards this month"
             />
             <div style={{
               background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.1) 0%, rgba(168, 85, 247, 0.05) 100%)',
@@ -926,7 +922,7 @@ const BudgetDashboard: React.FC = () => {
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                 <SavingsIcon style={{ color: theme.palette.secondary.main, fontSize: '20px' }} />
-                <span style={{ fontWeight: 600, color: theme.palette.secondary.main }}>How it works</span>
+                <span style={{ fontWeight: 600, color: theme.palette.secondary.main }}>{t('budget.howItWorks')}</span>
               </div>
               <ul style={{
                 margin: 0,
@@ -935,9 +931,9 @@ const BudgetDashboard: React.FC = () => {
                 fontSize: '13px',
                 lineHeight: '1.6'
               }}>
-                <li>This budget tracks <strong>all</strong> credit card spending combined</li>
-                <li>It's separate from individual category budgets</li>
-                <li>You'll see a warning when you're close to or over your limit</li>
+                <li>{t('budget.howItWorksItem1')}</li>
+                <li>{t('budget.howItWorksItem2')}</li>
+                <li>{t('budget.howItWorksItem3')}</li>
               </ul>
             </div>
           </div>
@@ -947,7 +943,7 @@ const BudgetDashboard: React.FC = () => {
             onClick={() => setIsTotalBudgetModalOpen(false)}
             startIcon={<CloseIcon />}
           >
-            Cancel
+            {t('common:actions.cancel')}
           </Button>
           <Button
             onClick={handleSaveTotalBudget}
@@ -961,7 +957,7 @@ const BudgetDashboard: React.FC = () => {
               }
             }}
           >
-            {savingTotalBudget ? 'Saving...' : 'Save Budget'}
+            {savingTotalBudget ? t('common:status.saving') : t('budget.saveBudget')}
           </Button>
         </DialogActions>
       </Dialog>

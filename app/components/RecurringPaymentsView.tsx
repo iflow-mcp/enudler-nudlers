@@ -7,9 +7,9 @@ import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
-import Snackbar from '@mui/material/Snackbar';
-import Alert from '@mui/material/Alert';
 import { useTheme } from '@mui/material/styles';
+import { useSnackbar } from './hooks/useSnackbar';
+import SnackbarFeedback from './SnackbarFeedback';
 
 import RepeatIcon from '@mui/icons-material/Repeat';
 import CreditScoreIcon from '@mui/icons-material/CreditScore';
@@ -22,12 +22,13 @@ import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import DeleteIcon from '@mui/icons-material/Delete';
 import IconButton from '@mui/material/IconButton';
 
-import { useCardVendors } from './CategoryDashboard/utils/useCardVendors';
 import { fetchCategories } from './CategoryDashboard/utils/categoryUtils';
 import CategoryAutocomplete from './CategoryAutocomplete';
 import AccountDisplay from './AccountDisplay';
-import Table, { Column } from './Table';
+import Table from './Table';
 import PageHeader from './PageHeader';
+import { useTranslation } from 'react-i18next';
+import { useLocale } from '../context/LocaleContext';
 
 interface Installment {
     name: string;
@@ -82,16 +83,20 @@ const formatNumber = (num: number): string => {
     return new Intl.NumberFormat('he-IL').format(Math.round(Math.abs(num)));
 };
 
-const formatDate = (dateStr: string): string => {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric'
-    });
-};
-
 const RecurringPaymentsView: React.FC = () => {
+    const { t } = useTranslation('views');
+    const { locale } = useLocale();
+    const dateLocale = locale === 'he' ? 'he-IL' : 'en-US';
+
+    const formatDate = (dateStr: string): string => {
+        const date = new Date(dateStr);
+        return date.toLocaleDateString(dateLocale, {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric'
+        });
+    };
+
     const [loading, setLoading] = useState(true);
     const [installments, setInstallments] = useState<Installment[]>([]);
     const [recurring, setRecurring] = useState<RecurringTransaction[]>([]);
@@ -121,11 +126,7 @@ const RecurringPaymentsView: React.FC = () => {
     const [categories, setCategories] = useState<string[]>([]);
     const [editingItem, setEditingItem] = useState<{ type: 'installment' | 'recurring', index: number, item: Installment | RecurringTransaction } | null>(null);
     const [editCategory, setEditCategory] = useState('');
-    const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' }>({
-        open: false,
-        message: '',
-        severity: 'success'
-    });
+    const { snackbar, showSnackbar, hideSnackbar } = useSnackbar();
 
     const theme = useTheme();
 
@@ -212,7 +213,7 @@ const RecurringPaymentsView: React.FC = () => {
             }
         } catch (err) {
             logger.error('Error fetching recurring payments', err as Error);
-            setError(err instanceof Error ? err.message : 'An error occurred');
+            setError(err instanceof Error ? err.message : t('recurring.errorGeneric'));
         } finally {
             setLoading(false);
             setLoadingMore(false);
@@ -220,7 +221,8 @@ const RecurringPaymentsView: React.FC = () => {
     };
 
     useEffect(() => {
-        fetchData(false);
+        queueMicrotask(() => fetchData(false));
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchData is stable; including it would cause re-runs when refs change
     }, [activeTab, installmentSortBy, installmentSortOrder, recurringSortBy, recurringSortOrder]);
 
     const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
@@ -238,7 +240,7 @@ const RecurringPaymentsView: React.FC = () => {
     };
 
     const handleRecurringSort = (field: string) => {
-        const sortField = field === 'price' ? 'amount' : field as any;
+        const sortField: typeof recurringSortBy = field === 'price' ? 'amount' : (field as typeof recurringSortBy);
         if (recurringSortBy === sortField) {
             setRecurringSortOrder(recurringSortOrder === 'desc' ? 'asc' : 'desc');
         } else {
@@ -248,7 +250,7 @@ const RecurringPaymentsView: React.FC = () => {
     };
 
     const handleInstallmentSort = (field: string) => {
-        const sortField = field === 'price' ? 'amount' : field as any;
+        const sortField: typeof installmentSortBy = field === 'price' ? 'amount' : (field as typeof installmentSortBy);
         if (installmentSortBy === sortField) {
             setInstallmentSortOrder(installmentSortOrder === 'desc' ? 'asc' : 'desc');
         } else {
@@ -284,7 +286,7 @@ const RecurringPaymentsView: React.FC = () => {
             if (editCategory && !categories.includes(editCategory)) {
                 setCategories(prev => [...prev, editCategory].sort());
             }
-            const updateItem = (item: any) => ({ ...item, category: editCategory });
+            const updateItem = <T,>(item: T): T => ({ ...item, category: editCategory });
             if (editingItem.type === 'installment') {
                 const newInstallments = [...installments];
                 newInstallments[editingItem.index] = updateItem(newInstallments[editingItem.index]);
@@ -295,13 +297,13 @@ const RecurringPaymentsView: React.FC = () => {
                 setRecurring(newRecurring);
             }
             const message = result.transactionsUpdated > 1
-                ? `Updated ${result.transactionsUpdated} transactions with "${editingItem.item.name}" to "${editCategory}".`
-                : `Category updated to "${editCategory}".`;
-            setSnackbar({ open: true, message, severity: 'success' });
+                ? t('recurring.snackbarTransactionsUpdated', { count: result.transactionsUpdated, name: editingItem.item.name, category: editCategory })
+                : t('recurring.snackbarCategoryUpdated', { category: editCategory });
+            showSnackbar(message, 'success');
             window.dispatchEvent(new CustomEvent('dataRefresh'));
         } catch (err) {
             logger.error('Error updating category', err as Error);
-            setSnackbar({ open: true, message: 'Failed to update category', severity: 'error' });
+            showSnackbar(t('recurring.snackbarFailedUpdateCategory'), 'error');
         } finally {
             setEditingItem(null);
             setEditCategory('');
@@ -324,12 +326,12 @@ const RecurringPaymentsView: React.FC = () => {
                 }),
             });
             if (!response.ok) throw new Error('Failed to mark as non-recurring');
-            setSnackbar({ open: true, message: `"${item.name}" marked as non-recurring`, severity: 'success' });
+            showSnackbar(t('recurring.snackbarMarkedNonRecurring', { name: item.name }), 'success');
             fetchData(false);
             window.dispatchEvent(new CustomEvent('dataRefresh'));
         } catch (err) {
             logger.error('Error marking as non-recurring', err as Error);
-            setSnackbar({ open: true, message: 'Failed to mark as non-recurring', severity: 'error' });
+            showSnackbar(t('recurring.snackbarFailedMarkNonRecurring'), 'error');
         }
     };
 
@@ -344,12 +346,12 @@ const RecurringPaymentsView: React.FC = () => {
                 }),
             });
             if (!response.ok) throw new Error('Failed to restore payment');
-            setSnackbar({ open: true, message: `"${item.name}" restored to recurring detection`, severity: 'success' });
+            showSnackbar(t('recurring.snackbarRestored', { name: item.name }), 'success');
             fetchData(false);
             window.dispatchEvent(new CustomEvent('dataRefresh'));
         } catch (err) {
             logger.error('Error restoring exclusion', err as Error);
-            setSnackbar({ open: true, message: 'Failed to restore payment', severity: 'error' });
+            showSnackbar(t('recurring.snackbarFailedRestore'), 'error');
         }
     };
 
@@ -362,11 +364,10 @@ const RecurringPaymentsView: React.FC = () => {
             zIndex: 1
         }}>
             <PageHeader
-                title="Recurring Payments"
-                description="Manage your fixed installments and recurring monthly subscriptions detected from your transaction patterns."
+                title={t('recurring.title')}
+                description={t('recurring.description')}
                 icon={<RepeatIcon sx={{ fontSize: '32px', color: '#ffffff' }} />}
             />
-
             <Box sx={{
                 borderRadius: '32px',
                 border: `1px solid ${theme.palette.divider}`,
@@ -391,9 +392,9 @@ const RecurringPaymentsView: React.FC = () => {
                             '& .MuiTabs-indicator': { backgroundColor: theme.palette.primary.main, height: '3px', borderRadius: '3px 3px 0 0' }
                         }}
                     >
-                        <Tab label={`Installments (${totalInstallments || '...'})`} icon={<CreditScoreIcon sx={{ fontSize: '18px' }} />} iconPosition="start" />
-                        <Tab label={`Recurring (${totalRecurring || '...'})`} icon={<RepeatIcon sx={{ fontSize: '18px' }} />} iconPosition="start" />
-                        <Tab label={`Hidden (${totalExclusions === null ? '...' : totalExclusions})`} icon={<VisibilityOffIcon sx={{ fontSize: '18px' }} />} iconPosition="start" />
+                        <Tab label={t('recurring.tabInstallments', { count: totalInstallments || t('recurring.loadingPlaceholder') })} icon={<CreditScoreIcon sx={{ fontSize: '18px' }} />} iconPosition="start" />
+                        <Tab label={t('recurring.tabRecurring', { count: totalRecurring || t('recurring.loadingPlaceholder') })} icon={<RepeatIcon sx={{ fontSize: '18px' }} />} iconPosition="start" />
+                        <Tab label={t('recurring.tabHidden', { count: totalExclusions === null ? t('recurring.loadingPlaceholder') : totalExclusions })} icon={<VisibilityOffIcon sx={{ fontSize: '18px' }} />} iconPosition="start" />
                     </Tabs>
                 </Box>
 
@@ -411,14 +412,14 @@ const RecurringPaymentsView: React.FC = () => {
                     }}>
                         <InfoOutlinedIcon sx={{ color: 'primary.main', fontSize: '20px' }} />
                         {activeTab === 0
-                            ? "Installments show planned payments for items purchased in multiple parts (e.g., credit card payments with balance remaining). These are typically fixed-term credit card plans."
+                            ? t('recurring.infoInstallments')
                             : activeTab === 1
-                                ? "Recurring payments are identified by analyzing your history for monthly or bi-monthly patterns. The algorithm looks for clusters with similar descriptions and amounts (allowing for ~10% variation), but also captures variable bills if they follow a strict schedule. If an item is incorrectly identified, use the block icon to exclude it from future detection."
-                                : "These payments have been explicitly excluded from recurring payment detection. Restore them to allow the system to detect them as recurring payments again."
+                                ? t('recurring.infoRecurring')
+                                : t('recurring.infoHidden')
                         }
                     </Typography>
                     {error ? (
-                        <Box sx={{ p: 4, textAlign: 'center', color: 'error.main' }}>Error: {error}</Box>
+                        <Box sx={{ p: 4, textAlign: 'center', color: 'error.main' }}>{t('recurring.errorPrefix', { message: error })}</Box>
                     ) : (
                         <>
                             {activeTab === 0 && (
@@ -433,7 +434,7 @@ const RecurringPaymentsView: React.FC = () => {
                                 }}>
                                     <Box sx={{ textAlign: 'center', flex: 1 }}>
                                         <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600, letterSpacing: '0.05em' }}>
-                                            ACTIVE INSTALLMENTS
+                                            {t('recurring.summaryActiveInstallments')}
                                         </Typography>
                                         <Typography variant="h5" sx={{ fontWeight: 800, color: theme.palette.primary.main }}>
                                             {activeInstallmentsCount}
@@ -442,7 +443,7 @@ const RecurringPaymentsView: React.FC = () => {
                                     <Box sx={{ width: '1px', bgcolor: 'divider' }} />
                                     <Box sx={{ textAlign: 'center', flex: 1 }}>
                                         <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600, letterSpacing: '0.05em' }}>
-                                            MONTHLY TOTAL
+                                            {t('recurring.summaryMonthlyTotal')}
                                         </Typography>
                                         <Typography variant="h5" sx={{ fontWeight: 800, color: theme.palette.success.main }}>
                                             ₪{formatNumber(activeInstallmentsAmount)}
@@ -485,24 +486,24 @@ const RecurringPaymentsView: React.FC = () => {
                                     <Table
                                         rows={installments}
                                         rowKey={(row) => `${row.name}-${row.current_installment}-${row.total_installments}`}
-                                        emptyMessage="No installment payments found"
+                                        emptyMessage={t('recurring.emptyInstallments')}
                                         onSort={handleInstallmentSort}
                                         sortField={installmentSortBy === 'amount' ? 'price' : installmentSortBy}
                                         sortDirection={installmentSortOrder}
                                         stickyHeader
                                         maxHeight="none"
                                         columns={[
-                                            { id: 'name', label: 'Description', sortable: true, format: (val) => <span style={{ fontWeight: 600 }}>{val}</span> },
-                                            { id: 'account', label: 'Account', format: (_, row) => renderAccountInfo(row) },
+                                            { id: 'name', label: t('recurring.columnDescription'), sortable: true, format: (val) => <span style={{ fontWeight: 600 }}>{val}</span> },
+                                            { id: 'account', label: t('recurring.columnAccount'), format: (_, row) => renderAccountInfo(row) },
                                             {
                                                 id: 'category',
-                                                label: 'Category',
+                                                label: t('recurring.columnCategory'),
                                                 format: (_, row: Installment,) => {
                                                     const index = installments.indexOf(row);
                                                     if (editingItem?.type === 'installment' && editingItem.index === index) {
                                                         return (
                                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                                <CategoryAutocomplete value={editCategory} onChange={setEditCategory} options={categories} autoFocus placeholder="Category" />
+                                                                <CategoryAutocomplete value={editCategory} onChange={setEditCategory} options={categories} autoFocus placeholder={t('recurring.categoryPlaceholder')} />
                                                                 <CheckIcon fontSize="small" sx={{ cursor: 'pointer', color: 'success.main' }} onClick={handleSaveCategory} />
                                                                 <CloseIcon fontSize="small" sx={{ cursor: 'pointer', color: 'error.main' }} onClick={handleCancelCategory} />
                                                             </Box>
@@ -513,19 +514,19 @@ const RecurringPaymentsView: React.FC = () => {
                                                             onClick={(e) => handleCategoryClick(e, row, index, 'installment')}
                                                             sx={{ display: 'inline-flex', alignItems: 'center', gap: '4px', bgcolor: theme.palette.primary.main, color: 'white', px: 1, py: 0.5, borderRadius: 1.5, cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}
                                                         >
-                                                            {row.category || 'Uncategorized'} <EditIcon sx={{ fontSize: '12px' }} />
+                                                            {row.category || t('recurring.uncategorized')} <EditIcon sx={{ fontSize: '12px' }} />
                                                         </Box>
                                                     );
                                                 }
                                             },
                                             {
                                                 id: 'progress',
-                                                label: 'Progress',
+                                                label: t('recurring.columnProgress'),
                                                 align: 'center',
                                                 format: (_, row) => {
                                                     const progressPercent = Math.round((row.current_installment / row.total_installments) * 100);
                                                     return (
-                                                        <Tooltip title={`${row.current_installment} of ${row.total_installments}`}>
+                                                        <Tooltip title={t('recurring.tooltipProgress', { current: row.current_installment, total: row.total_installments })}>
                                                             <Box>
                                                                 <Typography variant="caption" sx={{ fontWeight: 600 }}>{row.current_installment}/{row.total_installments}</Typography>
                                                                 <Box sx={{ width: '60px', height: '6px', bgcolor: 'action.hover', borderRadius: 3, mx: 'auto', mt: 0.5, overflow: 'hidden' }}>
@@ -536,9 +537,9 @@ const RecurringPaymentsView: React.FC = () => {
                                                     );
                                                 }
                                             },
-                                            { id: 'price', label: 'Monthly', align: 'right', sortable: true, format: (val) => <span style={{ fontWeight: 700, color: theme.palette.primary.main }}>₪{formatNumber(val)}</span> },
-                                            { id: 'next_payment_date', label: 'Next', align: 'center', sortable: true, format: (val) => val ? formatDate(val) : 'Completed' },
-                                            { id: 'status', label: 'Status', align: 'center', sortable: true, format: (val) => <Chip label={val} size="small" color={val === 'completed' ? 'success' : 'primary'} sx={{ fontWeight: 600, borderRadius: '8px' }} /> }
+                                            { id: 'price', label: t('recurring.columnMonthly'), align: 'right', sortable: true, format: (val) => <span style={{ fontWeight: 700, color: theme.palette.primary.main }}>₪{formatNumber(val)}</span> },
+                                            { id: 'next_payment_date', label: t('recurring.columnNext'), align: 'center', sortable: true, format: (val) => val ? formatDate(val) : t('recurring.completed') },
+                                            { id: 'status', label: t('recurring.columnStatus'), align: 'center', sortable: true, format: (val) => <Chip label={val === 'completed' ? t('recurring.statusCompleted') : t('recurring.statusActive')} size="small" color={val === 'completed' ? 'success' : 'primary'} sx={{ fontWeight: 600, borderRadius: '8px' }} /> }
                                         ]}
                                         mobileCardRenderer={(row) => {
                                             const index = installments.indexOf(row);
@@ -546,7 +547,9 @@ const RecurringPaymentsView: React.FC = () => {
                                             return (
                                                 <Box>
                                                     <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-                                                        <Typography variant="subtitle2" fontWeight={700}>{row.name}</Typography>
+                                                        <Typography variant="subtitle2" sx={{
+                                                            fontWeight: 700
+                                                        }}>{row.name}</Typography>
                                                         <Typography variant="subtitle2" sx={{ fontWeight: 800, color: theme.palette.primary.main }}>
                                                             ₪{formatNumber(row.price)}
                                                         </Typography>
@@ -555,7 +558,7 @@ const RecurringPaymentsView: React.FC = () => {
                                                         <Box sx={{ flex: 1 }}>
                                                             {isEditing ? (
                                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: '8px', mt: 1 }}>
-                                                                    <CategoryAutocomplete value={editCategory} onChange={setEditCategory} options={categories} autoFocus placeholder="Category" />
+                                                                    <CategoryAutocomplete value={editCategory} onChange={setEditCategory} options={categories} autoFocus placeholder={t('recurring.categoryPlaceholder')} />
                                                                     <CheckIcon fontSize="small" sx={{ cursor: 'pointer', color: 'success.main' }} onClick={(e) => { e.stopPropagation(); handleSaveCategory(); }} />
                                                                     <CloseIcon fontSize="small" sx={{ cursor: 'pointer', color: 'error.main' }} onClick={(e) => { e.stopPropagation(); handleCancelCategory(); }} />
                                                                 </Box>
@@ -564,16 +567,23 @@ const RecurringPaymentsView: React.FC = () => {
                                                                     onClick={(e) => handleCategoryClick(e, row, index, 'installment')}
                                                                     sx={{ display: 'inline-flex', alignItems: 'center', gap: '4px', bgcolor: theme.palette.primary.main, color: 'white', px: 1, py: 0.5, borderRadius: 1.5, cursor: 'pointer', fontSize: '10px', fontWeight: 600 }}
                                                                 >
-                                                                    {row.category || 'Uncategorized'} <EditIcon sx={{ fontSize: '10px' }} />
+                                                                    {row.category || t('recurring.uncategorized')} <EditIcon sx={{ fontSize: '10px' }} />
                                                                 </Box>
                                                             )}
                                                         </Box>
                                                         <Box sx={{ textAlign: 'right' }}>
-                                                            <Typography variant="caption" color="text.secondary" display="block">
+                                                            <Typography
+                                                                variant="caption"
+                                                                sx={{
+                                                                    color: "text.secondary",
+                                                                    display: "block"
+                                                                }}>
                                                                 {row.current_installment}/{row.total_installments}
                                                             </Typography>
-                                                            <Typography variant="caption" color="text.secondary">
-                                                                {row.next_payment_date ? formatDate(row.next_payment_date) : 'Completed'}
+                                                            <Typography variant="caption" sx={{
+                                                                color: "text.secondary"
+                                                            }}>
+                                                                {row.next_payment_date ? formatDate(row.next_payment_date) : t('recurring.completed')}
                                                             </Typography>
                                                         </Box>
                                                     </Box>
@@ -581,7 +591,7 @@ const RecurringPaymentsView: React.FC = () => {
                                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                                                             {renderAccountInfo(row)}
                                                             <Chip
-                                                                label={row.status}
+                                                                label={row.status === 'completed' ? t('recurring.statusCompleted') : t('recurring.statusActive')}
                                                                 size="small"
                                                                 color={row.status === 'completed' ? 'success' : 'primary'}
                                                                 sx={{ height: 20, fontSize: '10px', borderRadius: '4px' }}
@@ -605,7 +615,7 @@ const RecurringPaymentsView: React.FC = () => {
                                     <Table
                                         rows={recurring}
                                         rowKey={(row) => `${row.name}-${row.month_count}`}
-                                        emptyMessage="No recurring payments detected"
+                                        emptyMessage={t('recurring.emptyRecurring')}
                                         onSort={handleRecurringSort}
                                         sortField={recurringSortBy === 'amount' ? 'price' : recurringSortBy}
                                         sortDirection={recurringSortOrder}
@@ -614,17 +624,17 @@ const RecurringPaymentsView: React.FC = () => {
                                         stickyHeader
                                         maxHeight="none"
                                         columns={[
-                                            { id: 'name', label: 'Description', format: (val) => <span style={{ fontWeight: 600 }}>{val}</span> },
-                                            { id: 'account', label: 'Account', format: (_, row) => renderAccountInfo(row) },
+                                            { id: 'name', label: t('recurring.columnDescription'), format: (val) => <span style={{ fontWeight: 600 }}>{val}</span> },
+                                            { id: 'account', label: t('recurring.columnAccount'), format: (_, row) => renderAccountInfo(row) },
                                             {
                                                 id: 'category',
-                                                label: 'Category',
+                                                label: t('recurring.columnCategory'),
                                                 format: (_, row) => {
                                                     const index = recurring.indexOf(row);
                                                     if (editingItem?.type === 'recurring' && editingItem.index === index) {
                                                         return (
                                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                                <CategoryAutocomplete value={editCategory} onChange={setEditCategory} options={categories} autoFocus placeholder="Category" />
+                                                                <CategoryAutocomplete value={editCategory} onChange={setEditCategory} options={categories} autoFocus placeholder={t('recurring.categoryPlaceholder')} />
                                                                 <CheckIcon fontSize="small" sx={{ cursor: 'pointer', color: 'success.main' }} onClick={handleSaveCategory} />
                                                                 <CloseIcon fontSize="small" sx={{ cursor: 'pointer', color: 'error.main' }} onClick={handleCancelCategory} />
                                                             </Box>
@@ -635,20 +645,20 @@ const RecurringPaymentsView: React.FC = () => {
                                                             onClick={(e) => handleCategoryClick(e, row, index, 'recurring')}
                                                             sx={{ display: 'inline-flex', alignItems: 'center', gap: '4px', bgcolor: theme.palette.primary.main, color: 'white', px: 1, py: 0.5, borderRadius: 1.5, cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}
                                                         >
-                                                            {row.category || 'Uncategorized'} <EditIcon sx={{ fontSize: '12px' }} />
+                                                            {row.category || t('recurring.uncategorized')} <EditIcon sx={{ fontSize: '12px' }} />
                                                         </Box>
                                                     );
                                                 }
                                             },
-                                            { id: 'price', label: 'Amount (Avg)', align: 'right', sortable: true, format: (val) => <span style={{ fontWeight: 700, color: theme.palette.primary.main }}>₪{formatNumber(val)}</span> },
-                                            { id: 'last_charge_date', label: 'Last Charge', align: 'center', sortable: true, format: (val) => formatDate(val) },
-                                            { id: 'month_count', label: 'Months', align: 'center', sortable: true, format: (val) => <span style={{ fontWeight: 500 }}>{val}</span> },
+                                            { id: 'price', label: t('recurring.columnAmountAvg'), align: 'right', sortable: true, format: (val) => <span style={{ fontWeight: 700, color: theme.palette.primary.main }}>₪{formatNumber(val)}</span> },
+                                            { id: 'last_charge_date', label: t('recurring.columnLastCharge'), align: 'center', sortable: true, format: (val) => formatDate(val) },
+                                            { id: 'month_count', label: t('recurring.columnMonths'), align: 'center', sortable: true, format: (val) => <span style={{ fontWeight: 500 }}>{val}</span> },
                                             {
                                                 id: 'actions',
                                                 label: '',
                                                 align: 'center',
                                                 format: (_, row) => (
-                                                    <Tooltip title="Not a recurring payment">
+                                                    <Tooltip title={t('recurring.tooltipNotRecurring')}>
                                                         <IconButton size="small" onClick={(e) => { e.stopPropagation(); handleMarkNotRecurring(row); }}>
                                                             <BlockIcon fontSize="small" />
                                                         </IconButton>
@@ -662,7 +672,9 @@ const RecurringPaymentsView: React.FC = () => {
                                             return (
                                                 <Box>
                                                     <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-                                                        <Typography variant="subtitle2" fontWeight={700}>{row.name}</Typography>
+                                                        <Typography variant="subtitle2" sx={{
+                                                            fontWeight: 700
+                                                        }}>{row.name}</Typography>
                                                         <Typography variant="subtitle2" sx={{ fontWeight: 800, color: theme.palette.primary.main }}>
                                                             ₪{formatNumber(row.price)}
                                                         </Typography>
@@ -671,7 +683,7 @@ const RecurringPaymentsView: React.FC = () => {
                                                         <Box sx={{ flex: 1 }}>
                                                             {isEditing ? (
                                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: '8px', mt: 1 }}>
-                                                                    <CategoryAutocomplete value={editCategory} onChange={setEditCategory} options={categories} autoFocus placeholder="Category" />
+                                                                    <CategoryAutocomplete value={editCategory} onChange={setEditCategory} options={categories} autoFocus placeholder={t('recurring.categoryPlaceholder')} />
                                                                     <CheckIcon fontSize="small" sx={{ cursor: 'pointer', color: 'success.main' }} onClick={(e) => { e.stopPropagation(); handleSaveCategory(); }} />
                                                                     <CloseIcon fontSize="small" sx={{ cursor: 'pointer', color: 'error.main' }} onClick={(e) => { e.stopPropagation(); handleCancelCategory(); }} />
                                                                 </Box>
@@ -680,16 +692,23 @@ const RecurringPaymentsView: React.FC = () => {
                                                                     onClick={(e) => handleCategoryClick(e, row, index, 'recurring')}
                                                                     sx={{ display: 'inline-flex', alignItems: 'center', gap: '4px', bgcolor: theme.palette.primary.main, color: 'white', px: 1, py: 0.5, borderRadius: 1.5, cursor: 'pointer', fontSize: '10px', fontWeight: 600 }}
                                                                 >
-                                                                    {row.category || 'Uncategorized'} <EditIcon sx={{ fontSize: '10px' }} />
+                                                                    {row.category || t('recurring.uncategorized')} <EditIcon sx={{ fontSize: '10px' }} />
                                                                 </Box>
                                                             )}
                                                         </Box>
                                                         <Box sx={{ textAlign: 'right' }}>
-                                                            <Typography variant="caption" color="text.secondary" display="block">
-                                                                {row.month_count} months
+                                                            <Typography
+                                                                variant="caption"
+                                                                sx={{
+                                                                    color: "text.secondary",
+                                                                    display: "block"
+                                                                }}>
+                                                                {t('recurring.monthsLabel', { count: row.month_count })}
                                                             </Typography>
-                                                            <Typography variant="caption" color="text.secondary">
-                                                                Last: {formatDate(row.last_charge_date)}
+                                                            <Typography variant="caption" sx={{
+                                                                color: "text.secondary"
+                                                            }}>
+                                                                {t('recurring.lastLabel', { date: formatDate(row.last_charge_date) })}
                                                             </Typography>
                                                         </Box>
                                                     </Box>
@@ -698,7 +717,7 @@ const RecurringPaymentsView: React.FC = () => {
                                                             {renderAccountInfo(row)}
                                                             {!isEditing && (
                                                                 <Chip
-                                                                    label={row.category || 'Uncategorized'}
+                                                                    label={row.category || t('recurring.uncategorized')}
                                                                     size="small"
                                                                     sx={{ height: 20, fontSize: '10px', borderRadius: '4px' }}
                                                                 />
@@ -714,7 +733,7 @@ const RecurringPaymentsView: React.FC = () => {
                                                                     <EditIcon fontSize="small" />
                                                                 </IconButton>
                                                             )}
-                                                            <Tooltip title="Not a recurring payment">
+                                                            <Tooltip title={t('recurring.tooltipNotRecurring')}>
                                                                 <IconButton size="small" onClick={(e) => { e.stopPropagation(); handleMarkNotRecurring(row); }} sx={{ p: 0.5 }}>
                                                                     <BlockIcon fontSize="small" />
                                                                 </IconButton>
@@ -729,19 +748,19 @@ const RecurringPaymentsView: React.FC = () => {
                                     <Table
                                         rows={exclusions}
                                         rowKey={(row) => String(row.id)}
-                                        emptyMessage="No hidden payments found"
+                                        emptyMessage={t('recurring.emptyHidden')}
                                         stickyHeader
                                         maxHeight="none"
                                         columns={[
-                                            { id: 'name', label: 'Name', format: (val) => <span style={{ fontWeight: 600 }}>{val}</span> },
+                                            { id: 'name', label: t('recurring.columnName'), format: (val) => <span style={{ fontWeight: 600 }}>{val}</span> },
                                             {
                                                 id: 'account_number',
-                                                label: 'Account',
-                                                format: (_, row) => renderAccountInfo(row as any)
+                                                label: t('recurring.columnAccount'),
+                                                format: (_, row) => renderAccountInfo(row)
                                             },
                                             {
                                                 id: 'created_at',
-                                                label: 'Disabled On',
+                                                label: t('recurring.columnDisabledOn'),
                                                 format: (val) => formatDate(val)
                                             },
                                             {
@@ -749,7 +768,7 @@ const RecurringPaymentsView: React.FC = () => {
                                                 label: '',
                                                 align: 'right',
                                                 format: (_, row) => (
-                                                    <Tooltip title="Restore to recurring">
+                                                    <Tooltip title={t('recurring.tooltipRestore')}>
                                                         <IconButton size="small" onClick={() => handleRestoreExclusion(row)} color="primary">
                                                             <DeleteIcon fontSize="small" />
                                                         </IconButton>
@@ -760,12 +779,20 @@ const RecurringPaymentsView: React.FC = () => {
                                         mobileCardRenderer={(row) => (
                                             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                                 <Box>
-                                                    <Typography variant="subtitle2" fontWeight={700}>{row.name}</Typography>
+                                                    <Typography variant="subtitle2" sx={{
+                                                        fontWeight: 700
+                                                    }}>{row.name}</Typography>
                                                     <Box sx={{ mt: 0.5 }}>
-                                                        {renderAccountInfo(row as any)}
+                                                        {renderAccountInfo(row)}
                                                     </Box>
-                                                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-                                                        Disabled: {formatDate(row.created_at)}
+                                                    <Typography
+                                                        variant="caption"
+                                                        sx={{
+                                                            color: "text.secondary",
+                                                            display: "block",
+                                                            mt: 0.5
+                                                        }}>
+                                                        {t('recurring.disabledLabel', { date: formatDate(row.created_at) })}
                                                     </Typography>
                                                 </Box>
                                                 <IconButton size="small" onClick={() => handleRestoreExclusion(row)} color="primary">
@@ -783,7 +810,7 @@ const RecurringPaymentsView: React.FC = () => {
                                 {!loading && activeTab !== 2 && !(activeTab === 0 ? hasMoreInstallments : hasMoreRecurring) && (installments.length > 0 || recurring.length > 0) && (
                                     <Box sx={{ p: 4, textAlign: 'center' }}>
                                         <Typography variant="body2" sx={{ color: 'text.secondary', fontWeight: 500 }}>
-                                            That's all for now ✨
+                                            {t('recurring.endOfList')}
                                         </Typography>
                                     </Box>
                                 )}
@@ -792,10 +819,12 @@ const RecurringPaymentsView: React.FC = () => {
                     )}
                 </Box>
             </Box>
-
-            <Snackbar open={snackbar.open} autoHideDuration={6000} onClose={() => setSnackbar({ ...snackbar, open: false })}>
-                <Alert severity={snackbar.severity} sx={{ borderRadius: '12px', fontWeight: 600 }}>{snackbar.message}</Alert>
-            </Snackbar>
+            <SnackbarFeedback
+                snackbar={snackbar}
+                onClose={hideSnackbar}
+                alertSx={{ borderRadius: '12px', fontWeight: 600 }}
+                showAlertClose={false}
+            />
         </Box>
     );
 };

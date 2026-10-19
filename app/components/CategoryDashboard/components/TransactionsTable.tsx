@@ -1,26 +1,28 @@
 import React from 'react';
 import { logger } from '../../../utils/client-logger';
-import { useTheme } from '@mui/material/styles';
-import { Table, TableBody, TableCell, TableHead, TableRow, Paper, Box, Typography, IconButton, TextField, Autocomplete, Snackbar, Alert, FormControlLabel, Checkbox, Tooltip, TableSortLabel, useMediaQuery, Button } from '@mui/material';
+import { useTheme, type Theme } from '@mui/material/styles';
+import { Table, TableBody, TableCell, TableHead, TableRow, Paper, Box, Typography, IconButton, TextField, Tooltip, TableSortLabel, useMediaQuery, Button } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import EditIcon from '@mui/icons-material/Edit';
 import CheckIcon from '@mui/icons-material/Check';
 import CloseIcon from '@mui/icons-material/Close';
-import { formatNumber } from '../utils/formatUtils';
+import { formatNumber } from '../utils/format';
 import { dateUtils } from '../utils/dateUtils';
 import { useCategories } from '../utils/useCategories';
 import { useCardVendors } from '../utils/useCardVendors';
 import StarIcon from '@mui/icons-material/Star';
 import StarBorderIcon from '@mui/icons-material/StarBorder';
 import NotesIcon from '@mui/icons-material/Notes';
-import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
 import { CardVendorIcon } from '../../CardVendorsModal';
 import { getTableHeaderCellStyle, getTableBodyCellStyle, TABLE_ROW_HOVER_STYLE, getTableRowHoverBackground } from '../utils/tableStyles';
 import DeleteConfirmationDialog from '../../DeleteConfirmationDialog';
 import CategoryAutocomplete from '../../CategoryAutocomplete';
 import AccountDisplay from '../../AccountDisplay';
 import MobileSortableTable, { SortOption } from '../../MobileSortableTable';
-import { Theme } from '@mui/material/styles';
+import { useTranslation } from 'react-i18next';
+import { useLocale } from '../../../context/LocaleContext';
+import { useSnackbar } from '../../hooks/useSnackbar';
+import SnackbarFeedback from '../../SnackbarFeedback';
 
 const getCurrencySymbol = (currency?: string) => {
   if (!currency) return '₪';
@@ -53,7 +55,7 @@ export interface Transaction {
 export interface TransactionsTableProps {
   transactions: Transaction[];
   isLoading?: boolean;
-  onDelete?: (transaction: Transaction) => void;
+  onDelete?: (transaction: Transaction) => void | boolean | Promise<void | boolean>;
   onUpdate?: (transaction: Transaction, updates: Partial<Transaction>) => void;
   groupByDate?: boolean;
   disableWrapper?: boolean;
@@ -82,6 +84,9 @@ const TransactionsTable: React.FC<TransactionsTableProps> = ({
   isBankView = false
 }) => {
   const theme = useTheme();
+  const { t } = useTranslation(['tx', 'common']);
+  const { locale } = useLocale();
+  const dateLocale = locale === 'he' ? 'he-IL' : 'en-US';
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const [editingTransaction, setEditingTransaction] = React.useState<Transaction | null>(null);
   const [editPrice, setEditPrice] = React.useState<string>('');
@@ -89,43 +94,34 @@ const TransactionsTable: React.FC<TransactionsTableProps> = ({
   const [applyToAll, setApplyToAll] = React.useState<boolean>(false);
   const { categories: availableCategories } = useCategories();
   const { getCardVendor, getCardNickname } = useCardVendors();
-  const [snackbar, setSnackbar] = React.useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' }>({
-    open: false,
-    message: '',
-    severity: 'success'
-  });
+  const { snackbar, showSnackbar, hideSnackbar } = useSnackbar<'success' | 'error' | 'info'>();
   const [confirmDeleteTransaction, setConfirmDeleteTransaction] = React.useState<Transaction | null>(null);
   const [editingNotes, setEditingNotes] = React.useState<{ identifier: string; vendor: string; content: string } | null>(null);
 
-  const handleToggleFavorite = React.useCallback(async (transaction: Transaction) => {
-    try {
-      const newStatus = !transaction.is_favorite;
-      onUpdate?.(transaction, { is_favorite: newStatus });
-    } catch (error) {
-      logger.error('Error toggling favorite', error as Error);
-    }
+  const handleToggleFavorite = React.useCallback((transaction: Transaction) => {
+    onUpdate?.(transaction, { is_favorite: !transaction.is_favorite });
   }, [onUpdate]);
 
-  const handleNotesUpdate = React.useCallback(async (transaction: Transaction, notes: string) => {
-    try {
-      onUpdate?.(transaction, { notes });
-      setEditingNotes(null);
-    } catch (error) {
-      logger.error('Error updating notes', error as Error);
-    }
+  const handleNotesUpdate = React.useCallback((transaction: Transaction, notes: string) => {
+    onUpdate?.(transaction, { notes });
+    setEditingNotes(null);
   }, [onUpdate]);
 
-  const handleDeleteClick = React.useCallback(() => {
+  const handleDeleteClick = React.useCallback(async () => {
     if (!confirmDeleteTransaction) return;
+    setConfirmDeleteTransaction(null);
     try {
-      onDelete?.(confirmDeleteTransaction);
-      setSnackbar({ open: true, message: 'Transaction deleted successfully', severity: 'success' });
+      const result = await onDelete?.(confirmDeleteTransaction);
+      if (result === false) {
+        showSnackbar(t('tx:snackbar.deleteError'), 'error');
+      } else {
+        showSnackbar(t('tx:snackbar.deleteSuccess'), 'success');
+      }
     } catch (error) {
       logger.error('Error deleting transaction', error as Error);
-      setSnackbar({ open: true, message: 'Error deleting transaction', severity: 'error' });
+      showSnackbar(t('tx:snackbar.deleteError'), 'error');
     }
-    setConfirmDeleteTransaction(null);
-  }, [confirmDeleteTransaction, onDelete]);
+  }, [confirmDeleteTransaction, onDelete, showSnackbar, t]);
 
   const handleEditClick = React.useCallback((transaction: Transaction) => {
     setEditingTransaction(transaction);
@@ -134,7 +130,7 @@ const TransactionsTable: React.FC<TransactionsTableProps> = ({
     setApplyToAll(false);
   }, []);
 
-  const handleSaveClick = React.useCallback(async () => {
+  const saveClick = React.useCallback(async () => {
     if (editingTransaction && editPrice) {
       const newPrice = parseFloat(editPrice);
       if (!isNaN(newPrice)) {
@@ -158,13 +154,12 @@ const TransactionsTable: React.FC<TransactionsTableProps> = ({
 
               if (response.ok) {
                 const result = await response.json();
-                setSnackbar({
-                  open: true,
-                  message: result.transactionsUpdated > 1
-                    ? `Updated ${result.transactionsUpdated} transactions and saved rule.`
-                    : `Category updated and rule saved.`,
-                  severity: 'success'
-                });
+                showSnackbar(
+                  result.transactionsUpdated > 1
+                    ? t('tx:snackbar.updatedManyAndRule', { count: result.transactionsUpdated })
+                    : t('tx:snackbar.categoryUpdatedAndRule'),
+                  'success'
+                );
                 onUpdate?.(editingTransaction, { category: editCategory, price: priceWithSign });
                 window.dispatchEvent(new CustomEvent('dataRefresh'));
               }
@@ -176,28 +171,33 @@ const TransactionsTable: React.FC<TransactionsTableProps> = ({
           }
         } catch (error) {
           logger.error('Error updating transaction', error as Error);
-          setSnackbar({ open: true, message: 'Update failed', severity: 'error' });
+          showSnackbar(t('tx:snackbar.updateError'), 'error');
         }
         setEditingTransaction(null);
       }
     }
-  }, [editingTransaction, editPrice, editCategory, applyToAll, onUpdate, isBankView]);
+  }, [editingTransaction, editPrice, editCategory, applyToAll, onUpdate, isBankView, showSnackbar, t]);
+
+  // Stable refs so row handlers keep a constant identity and React.memo on rows stays effective
+  const saveClickRef = React.useRef(saveClick);
+  const editingTransactionRef = React.useRef(editingTransaction);
+  React.useEffect(() => {
+    saveClickRef.current = saveClick;
+    editingTransactionRef.current = editingTransaction;
+  }, [saveClick, editingTransaction]);
+
+  const handleSaveClick = React.useCallback(() => { saveClickRef.current(); }, []);
 
   const handleCancelClick = React.useCallback(() => {
     setEditingTransaction(null);
   }, []);
 
   const handleRowClick = React.useCallback((transaction: Transaction) => {
-    if (editingTransaction && (editingTransaction.identifier !== transaction.identifier || editingTransaction.vendor !== transaction.vendor)) {
-      handleSaveClick();
+    const editing = editingTransactionRef.current;
+    if (editing && (editing.identifier !== transaction.identifier || editing.vendor !== transaction.vendor)) {
+      saveClickRef.current();
     }
-  }, [editingTransaction, handleSaveClick]);
-
-  const handleTableClick = React.useCallback((e: React.MouseEvent) => {
-    if (editingTransaction && (e.target as HTMLElement).tagName === 'TABLE') {
-      handleSaveClick();
-    }
-  }, [editingTransaction, handleSaveClick]);
+  }, []);
 
   const groupedTransactions = React.useMemo(() => {
     if (!groupByDate) return { 'all': transactions };
@@ -223,24 +223,24 @@ const TransactionsTable: React.FC<TransactionsTableProps> = ({
     today.setHours(0, 0, 0, 0);
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
-    if (date.getTime() === today.getTime()) return 'Today';
-    if (date.getTime() === yesterday.getTime()) return 'Yesterday';
-    return date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
+    if (date.getTime() === today.getTime()) return t('tx:groupHeader.today');
+    if (date.getTime() === yesterday.getTime()) return t('tx:groupHeader.yesterday');
+    return date.toLocaleDateString(dateLocale, { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
   };
 
   const mobileSortOptions: SortOption[] = React.useMemo(() => [
-    { id: 'date', label: 'Date', defaultDirection: 'desc' },
-    { id: 'price', label: 'Amount', defaultDirection: 'desc' },
-    { id: 'name', label: 'Name', defaultDirection: 'asc' },
-    { id: 'category', label: 'Category', defaultDirection: 'asc' },
-  ], []);
+    { id: 'date', label: t('tx:table.sortByDate'), defaultDirection: 'desc' },
+    { id: 'price', label: t('tx:table.sortByAmount'), defaultDirection: 'desc' },
+    { id: 'name', label: t('tx:table.sortByName'), defaultDirection: 'asc' },
+    { id: 'category', label: t('tx:table.sortByCategory'), defaultDirection: 'asc' },
+  ], [t]);
 
   const handleMobileSort = React.useCallback((field: string) => {
     if (onSort) onSort(field);
   }, [onSort]);
 
-  if (isLoading) return <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}><Typography>Loading...</Typography></Box>;
-  if (!transactions || transactions.length === 0) return <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}><Typography>No transactions.</Typography></Box>;
+  if (isLoading) return <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}><Typography>{t('tx:table.loading')}</Typography></Box>;
+  if (!transactions || transactions.length === 0) return <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}><Typography>{t('tx:table.empty')}</Typography></Box>;
 
   const columnWidths = { description: '35%', category: '15%', amount: '12%', installment: '8%', card: '12%', date: '10%', actions: '8%' };
   const tableHeaderBaseStyle = getTableHeaderCellStyle(theme);
@@ -274,13 +274,13 @@ const TransactionsTable: React.FC<TransactionsTableProps> = ({
               transaction={t}
               theme={theme}
               onEdit={() => handleEditClick(t)}
-              onDelete={() => setConfirmDeleteTransaction(t)}
+              onDelete={onDelete ? () => setConfirmDeleteTransaction(t) : undefined}
               onToggleFavorite={() => handleToggleFavorite(t)}
               onNotesUpdate={(notes) => handleNotesUpdate(t, notes)}
               getCardVendor={getCardVendor}
               getCardNickname={getCardNickname}
               showDate={!groupByDate}
-              isEditing={editingTransaction?.identifier === t.identifier}
+              isEditing={editingTransaction?.identifier === t.identifier && editingTransaction?.vendor === t.vendor}
               editCategory={editCategory}
               setEditCategory={setEditCategory}
               availableCategories={availableCategories}
@@ -297,13 +297,13 @@ const TransactionsTable: React.FC<TransactionsTableProps> = ({
         <Table size={disableWrapper ? "small" : "medium"} stickyHeader>
           <TableHead>
             <TableRow>
-              {renderSortableHeader('Description', 'name', 'left', columnWidths.description)}
-              {renderSortableHeader('Category', 'category', 'left', columnWidths.category)}
-              {renderSortableHeader('Amount', 'price', 'right', columnWidths.amount)}
-              {!hideInstallmentsColumn && <TableCell style={{ ...tableHeaderBaseStyle, width: columnWidths.installment }}>Inst.</TableCell>}
-              {renderSortableHeader('Card', 'account_number', 'left', columnWidths.card)}
-              {!groupByDate && renderSortableHeader('Date', 'date', 'left', columnWidths.date)}
-              {!hideActions && <TableCell align="right" style={{ ...tableHeaderBaseStyle, width: columnWidths.actions }}>Actions</TableCell>}
+              {renderSortableHeader(t('tx:table.columnDescription'), 'name', 'left', columnWidths.description)}
+              {renderSortableHeader(t('tx:table.columnCategory'), 'category', 'left', columnWidths.category)}
+              {renderSortableHeader(t('tx:table.columnAmount'), 'price', 'right', columnWidths.amount)}
+              {!hideInstallmentsColumn && <TableCell style={{ ...tableHeaderBaseStyle, width: columnWidths.installment }}>{t('tx:table.columnInstallments')}</TableCell>}
+              {renderSortableHeader(t('tx:table.columnCard'), 'account_number', 'left', columnWidths.card)}
+              {!groupByDate && renderSortableHeader(t('tx:table.columnDate'), 'date', 'left', columnWidths.date)}
+              {!hideActions && <TableCell align="right" style={{ ...tableHeaderBaseStyle, width: columnWidths.actions }}>{t('tx:table.columnActions')}</TableCell>}
             </TableRow>
           </TableHead>
           <TableBody>
@@ -312,76 +312,82 @@ const TransactionsTable: React.FC<TransactionsTableProps> = ({
                 <TableRow sx={{ background: theme.palette.mode === 'dark' ? 'rgba(30, 41, 59, 1)' : '#f8fafc', position: 'sticky', top: 53, zIndex: 9 }}>
                   <TableCell colSpan={7} sx={{ fontWeight: 700, p: 1 }}>{formatDateHeader(date)}</TableCell>
                 </TableRow>
-                {groupedTransactions[date].map((t, i) => (
-                  <TransactionRow
-                    key={`${t.identifier}-${i}`}
-                    transaction={t}
-                    theme={theme}
-                    editingTransaction={editingTransaction}
-                    editCategory={editCategory}
-                    setEditCategory={setEditCategory}
-                    availableCategories={availableCategories}
-                    applyToAll={applyToAll}
-                    setApplyToAll={setApplyToAll}
-                    handleRowClick={handleRowClick}
-                    handleEditClick={handleEditClick}
-                    editPrice={editPrice}
-                    setEditPrice={setEditPrice}
-                    handleSaveClick={handleSaveClick}
-                    handleCancelClick={handleCancelClick}
-                    setConfirmDeleteTransaction={setConfirmDeleteTransaction}
-                    onToggleFavorite={handleToggleFavorite}
-                    onNotesUpdate={handleNotesUpdate}
-                    editingNotes={editingNotes}
-                    setEditingNotes={setEditingNotes}
-                    getCardVendor={getCardVendor}
-                    getCardNickname={getCardNickname}
-                    isWidget={disableWrapper}
-                    hideActions={hideActions}
-                    hideInstallmentsColumn={hideInstallmentsColumn}
-                    showProcessedDate={showProcessedDate}
-                    groupByDate={true}
-                  />
-                ))}
+                {groupedTransactions[date].map((t) => {
+                  const isRowEditing = editingTransaction?.identifier === t.identifier && editingTransaction?.vendor === t.vendor;
+                  const isRowNotes = editingNotes?.identifier === t.identifier && editingNotes?.vendor === t.vendor;
+                  return (
+                    <TransactionRow
+                      key={`${t.identifier}-${t.vendor}`}
+                      transaction={t}
+                      theme={theme}
+                      editingTransaction={isRowEditing ? editingTransaction : null}
+                      editCategory={isRowEditing ? editCategory : ''}
+                      setEditCategory={setEditCategory}
+                      availableCategories={availableCategories}
+                      applyToAll={isRowEditing ? applyToAll : false}
+                      setApplyToAll={setApplyToAll}
+                      handleRowClick={handleRowClick}
+                      handleEditClick={handleEditClick}
+                      editPrice={isRowEditing ? editPrice : ''}
+                      setEditPrice={setEditPrice}
+                      handleSaveClick={handleSaveClick}
+                      handleCancelClick={handleCancelClick}
+                      setConfirmDeleteTransaction={onDelete ? setConfirmDeleteTransaction : undefined}
+                      onToggleFavorite={handleToggleFavorite}
+                      onNotesUpdate={handleNotesUpdate}
+                      editingNotes={isRowNotes ? editingNotes : null}
+                      setEditingNotes={setEditingNotes}
+                      getCardVendor={getCardVendor}
+                      getCardNickname={getCardNickname}
+                      isWidget={disableWrapper}
+                      hideActions={hideActions}
+                      hideInstallmentsColumn={hideInstallmentsColumn}
+                      showProcessedDate={showProcessedDate}
+                      groupByDate={true}
+                    />
+                  );
+                })}
               </React.Fragment>
-            )) : transactions.map((t, i) => (
-              <TransactionRow
-                key={i}
-                transaction={t}
-                theme={theme}
-                editingTransaction={editingTransaction}
-                editCategory={editCategory}
-                setEditCategory={setEditCategory}
-                availableCategories={availableCategories}
-                applyToAll={applyToAll}
-                setApplyToAll={setApplyToAll}
-                handleRowClick={handleRowClick}
-                handleEditClick={handleEditClick}
-                editPrice={editPrice}
-                setEditPrice={setEditPrice}
-                handleSaveClick={handleSaveClick}
-                handleCancelClick={handleCancelClick}
-                setConfirmDeleteTransaction={setConfirmDeleteTransaction}
-                onToggleFavorite={handleToggleFavorite}
-                onNotesUpdate={handleNotesUpdate}
-                editingNotes={editingNotes}
-                setEditingNotes={setEditingNotes}
-                getCardVendor={getCardVendor}
-                getCardNickname={getCardNickname}
-                isWidget={disableWrapper}
-                hideActions={hideActions}
-                hideInstallmentsColumn={hideInstallmentsColumn}
-                showProcessedDate={showProcessedDate}
-                isBankView={isBankView}
-                groupByDate={false}
-              />
-            ))}
+            )) : transactions.map((t) => {
+              const isRowEditing = editingTransaction?.identifier === t.identifier && editingTransaction?.vendor === t.vendor;
+              const isRowNotes = editingNotes?.identifier === t.identifier && editingNotes?.vendor === t.vendor;
+              return (
+                <TransactionRow
+                  key={`${t.identifier}-${t.vendor}`}
+                  transaction={t}
+                  theme={theme}
+                  editingTransaction={isRowEditing ? editingTransaction : null}
+                  editCategory={isRowEditing ? editCategory : ''}
+                  setEditCategory={setEditCategory}
+                  availableCategories={availableCategories}
+                  applyToAll={isRowEditing ? applyToAll : false}
+                  setApplyToAll={setApplyToAll}
+                  handleRowClick={handleRowClick}
+                  handleEditClick={handleEditClick}
+                  editPrice={isRowEditing ? editPrice : ''}
+                  setEditPrice={setEditPrice}
+                  handleSaveClick={handleSaveClick}
+                  handleCancelClick={handleCancelClick}
+                  setConfirmDeleteTransaction={onDelete ? setConfirmDeleteTransaction : undefined}
+                  onToggleFavorite={handleToggleFavorite}
+                  onNotesUpdate={handleNotesUpdate}
+                  editingNotes={isRowNotes ? editingNotes : null}
+                  setEditingNotes={setEditingNotes}
+                  getCardVendor={getCardVendor}
+                  getCardNickname={getCardNickname}
+                  isWidget={disableWrapper}
+                  hideActions={hideActions}
+                  hideInstallmentsColumn={hideInstallmentsColumn}
+                  showProcessedDate={showProcessedDate}
+                  isBankView={isBankView}
+                  groupByDate={false}
+                />
+              );
+            })}
           </TableBody>
         </Table>
       )}
-      <Snackbar open={snackbar.open} autoHideDuration={6000} onClose={() => setSnackbar({ ...snackbar, open: false })}>
-        <Alert severity={snackbar.severity} onClose={() => setSnackbar({ ...snackbar, open: false })}>{snackbar.message}</Alert>
-      </Snackbar>
+      <SnackbarFeedback snackbar={snackbar} onClose={hideSnackbar} />
       <DeleteConfirmationDialog
         open={!!confirmDeleteTransaction}
         onClose={() => setConfirmDeleteTransaction(null)}
@@ -409,7 +415,7 @@ interface TransactionRowProps {
   setEditPrice: (val: string) => void;
   handleSaveClick: () => void;
   handleCancelClick: () => void;
-  setConfirmDeleteTransaction: (t: Transaction) => void;
+  setConfirmDeleteTransaction?: (t: Transaction) => void;
   getCardVendor: (accountNumber: string | undefined | null) => string | null;
   getCardNickname: (accountNumber: string | undefined | null) => string | null | undefined;
   onToggleFavorite: (t: Transaction) => void;
@@ -440,8 +446,8 @@ const TransactionRow = React.memo(({
   handleSaveClick,
   handleCancelClick,
   setConfirmDeleteTransaction,
-  getCardVendor,
-  getCardNickname,
+  getCardVendor: _getCardVendor,
+  getCardNickname: _getCardNickname,
   onToggleFavorite,
   onNotesUpdate,
   editingNotes,
@@ -449,35 +455,38 @@ const TransactionRow = React.memo(({
   isWidget,
   hideActions,
   hideInstallmentsColumn,
-  showProcessedDate,
+  showProcessedDate: _showProcessedDate,
   isBankView,
   groupByDate
 }: TransactionRowProps) => {
+  const { t } = useTranslation(['tx', 'common']);
   const cellStyle = { ...getTableBodyCellStyle(theme), fontSize: isWidget ? '0.75rem' : '0.875rem', p: isWidget ? '4px 12px' : '8px 16px' };
 
   return (
     <TableRow onClick={() => handleRowClick(transaction)} style={TABLE_ROW_HOVER_STYLE} onMouseEnter={(e) => e.currentTarget.style.background = getTableRowHoverBackground(theme)} onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
       <TableCell style={{ ...cellStyle, maxWidth: '300px' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <IconButton
-            size="small"
-            onClick={(e) => { e.stopPropagation(); onToggleFavorite(transaction); }}
-            sx={{
-              color: transaction.is_favorite ? '#fbbf24' : theme.palette.text.disabled,
-              transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-              p: '4px',
-              '&:hover': {
-                transform: 'scale(1.2) rotate(5deg)',
-                color: '#fbbf24',
-                background: 'rgba(251, 191, 36, 0.08)'
-              },
-              '& svg': {
-                filter: transaction.is_favorite ? 'drop-shadow(0 0 2px rgba(251, 191, 36, 0.4))' : 'none'
-              }
-            }}
-          >
-            {transaction.is_favorite ? <StarIcon fontSize="small" /> : <StarBorderIcon fontSize="small" />}
-          </IconButton>
+          <Tooltip title={transaction.is_favorite ? t('tx:tooltips.unfavorite') : t('tx:tooltips.favorite')}>
+            <IconButton
+              size="small"
+              onClick={(e) => { e.stopPropagation(); onToggleFavorite(transaction); }}
+              sx={{
+                color: transaction.is_favorite ? '#fbbf24' : theme.palette.text.disabled,
+                transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                p: '4px',
+                '&:hover': {
+                  transform: 'scale(1.2) rotate(5deg)',
+                  color: '#fbbf24',
+                  background: 'rgba(251, 191, 36, 0.08)'
+                },
+                '& svg': {
+                  filter: transaction.is_favorite ? 'drop-shadow(0 0 2px rgba(251, 191, 36, 0.4))' : 'none'
+                }
+              }}
+            >
+              {transaction.is_favorite ? <StarIcon fontSize="small" /> : <StarBorderIcon fontSize="small" />}
+            </IconButton>
+          </Tooltip>
           <Box sx={{ flex: 1, minWidth: 0 }}>
             <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>{transaction.name}</Typography>
             {transaction.notes && (
@@ -504,11 +513,11 @@ const TransactionRow = React.memo(({
       <TableCell style={cellStyle}>
         {editingTransaction?.identifier === transaction.identifier && !hideActions ? (
           <CategoryAutocomplete value={editCategory} onChange={setEditCategory} options={availableCategories} applyToAll={applyToAll} onApplyToAllChange={setApplyToAll} showApplyToAll={editCategory !== editingTransaction.category} />
-        ) : <span style={{ cursor: 'pointer', color: '#3b82f6' }} onClick={(e) => { e.stopPropagation(); handleEditClick(transaction); }}>{transaction.category}</span>}
+        ) : <span style={{ cursor: 'pointer', color: 'var(--n-info)' }} onClick={(e) => { e.stopPropagation(); handleEditClick(transaction); }}>{transaction.category}</span>}
       </TableCell>
       <TableCell align="right" style={{
         ...cellStyle,
-        color: transaction.price < 0 ? '#ef4444' : '#10b981',
+        color: transaction.price < 0 ? 'var(--n-error)' : 'var(--n-success)',
         fontWeight: 600
       }}>
         {editingTransaction?.identifier === transaction.identifier && !hideActions ? (
@@ -541,23 +550,35 @@ const TransactionRow = React.memo(({
         <TableCell align="right" style={cellStyle}>
           {editingTransaction?.identifier === transaction.identifier ? (
             <>
-              <IconButton onClick={handleSaveClick} sx={{ color: '#4ADE80' }}><CheckIcon /></IconButton>
-              <IconButton onClick={handleCancelClick} sx={{ color: '#ef4444' }}><CloseIcon /></IconButton>
+              <Tooltip title={t('common:actions.save')}>
+                <IconButton onClick={handleSaveClick} sx={{ color: '#4ADE80' }}><CheckIcon /></IconButton>
+              </Tooltip>
+              <Tooltip title={t('common:actions.cancel')}>
+                <IconButton onClick={handleCancelClick} sx={{ color: 'var(--n-error)' }}><CloseIcon /></IconButton>
+              </Tooltip>
             </>
           ) : (
             <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <IconButton onClick={(e) => { e.stopPropagation(); handleEditClick(transaction); }} size="small" sx={{ color: '#3b82f6' }}><EditIcon fontSize="small" /></IconButton>
-              <IconButton onClick={(e) => { e.stopPropagation(); setEditingNotes({ identifier: transaction.identifier, vendor: transaction.vendor, content: transaction.notes || '' }); }} size="small" sx={{ color: transaction.notes ? theme.palette.primary.main : theme.palette.text.disabled }}><NotesIcon fontSize="small" /></IconButton>
-              <IconButton onClick={(e) => { e.stopPropagation(); setConfirmDeleteTransaction(transaction); }} size="small" sx={{ color: '#ef4444' }}><DeleteIcon fontSize="small" /></IconButton>
+              <Tooltip title={t('tx:tooltips.editTransaction')}>
+                <IconButton onClick={(e) => { e.stopPropagation(); handleEditClick(transaction); }} size="small" sx={{ color: 'var(--n-info)' }}><EditIcon fontSize="small" /></IconButton>
+              </Tooltip>
+              <Tooltip title={transaction.notes ? t('tx:tooltips.viewNotes') : t('tx:tooltips.openNotes')}>
+                <IconButton onClick={(e) => { e.stopPropagation(); setEditingNotes({ identifier: transaction.identifier, vendor: transaction.vendor, content: transaction.notes || '' }); }} size="small" sx={{ color: transaction.notes ? theme.palette.primary.main : theme.palette.text.disabled }}><NotesIcon fontSize="small" /></IconButton>
+              </Tooltip>
+              {setConfirmDeleteTransaction && (
+                <Tooltip title={t('tx:tooltips.deleteTransaction')}>
+                  <IconButton onClick={(e) => { e.stopPropagation(); setConfirmDeleteTransaction(transaction); }} size="small" sx={{ color: 'var(--n-error)' }}><DeleteIcon fontSize="small" /></IconButton>
+                </Tooltip>
+              )}
             </Box>
           )}
           {editingNotes?.identifier === transaction.identifier && editingNotes?.vendor === transaction.vendor && (
             <Box onClick={(e) => e.stopPropagation()} sx={{ position: 'fixed', zIndex: 1000, bgcolor: 'background.paper', p: 2, borderRadius: 2, boxShadow: 3, border: 1, borderColor: 'divider', width: 250, right: 50 }}>
-              <Typography variant="subtitle2" sx={{ mb: 1 }}>Notes</Typography>
-              <TextField fullWidth multiline rows={3} value={editingNotes.content} onChange={(e) => setEditingNotes({ ...editingNotes, content: e.target.value })} size="small" sx={{ mb: 1 }} />
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>{t('tx:notes.title')}</Typography>
+              <TextField fullWidth multiline rows={3} placeholder={t('tx:notes.placeholder')} value={editingNotes.content} onChange={(e) => setEditingNotes({ ...editingNotes, content: e.target.value })} size="small" sx={{ mb: 1 }} />
               <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1 }}>
-                <Button size="small" onClick={() => setEditingNotes(null)}>Cancel</Button>
-                <Button variant="contained" size="small" onClick={() => onNotesUpdate(transaction, editingNotes.content)}>Save</Button>
+                <Button size="small" onClick={() => setEditingNotes(null)}>{t('common:actions.cancel')}</Button>
+                <Button variant="contained" size="small" onClick={() => onNotesUpdate(transaction, editingNotes.content)}>{t('common:actions.save')}</Button>
               </Box>
             </Box>
           )}
@@ -566,12 +587,13 @@ const TransactionRow = React.memo(({
     </TableRow>
   );
 });
+TransactionRow.displayName = 'TransactionRow';
 
 interface TransactionMobileCardProps {
   transaction: Transaction;
-  theme: any;
+  theme: Theme;
   onEdit: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
   getCardVendor: (accountNumber: string | undefined | null) => string | null;
   getCardNickname: (accountNumber: string | undefined | null) => string | null | undefined;
   showDate?: boolean;
@@ -606,12 +628,13 @@ const TransactionMobileCardContent = ({
   availableCategories,
   applyToAll,
   setApplyToAll,
-  editPrice,
-  setEditPrice,
+  editPrice: _editPrice,
+  setEditPrice: _setEditPrice,
   onSave,
   onCancel,
   isBankView = false
 }: TransactionMobileCardProps) => {
+  const { t } = useTranslation(['tx', 'common']);
   const [showNoteInput, setShowNoteInput] = React.useState(false);
   const [noteContent, setNoteContent] = React.useState(transaction.notes || '');
 
@@ -636,56 +659,73 @@ const TransactionMobileCardContent = ({
           </IconButton>
           <Box sx={{ ml: 1, minWidth: 0 }}>
             <Typography variant="subtitle2" noWrap sx={{ fontWeight: 700 }}>{transaction.name}</Typography>
-            {showDate && <Typography variant="caption" display="block" color="text.secondary">{dateUtils.formatDate(transaction.date)}</Typography>}
-            {transaction.notes && !showNoteInput && <Typography variant="caption" fontStyle="italic" color="text.secondary" display="block">{transaction.notes}</Typography>}
+            {showDate && <Typography
+              variant="caption"
+              sx={{
+                display: "block",
+                color: "text.secondary"
+              }}>{dateUtils.formatDate(transaction.date)}</Typography>}
+            {transaction.notes && !showNoteInput && <Typography
+              variant="caption"
+              sx={{
+                fontStyle: "italic",
+                color: "text.secondary",
+                display: "block"
+              }}>{transaction.notes}</Typography>}
           </Box>
         </Box>
-        <Typography variant="subtitle2" sx={{ fontWeight: 800, color: transaction.price < 0 ? '#ef4444' : '#10b981' }}>
+        <Typography variant="subtitle2" sx={{ fontWeight: 800, color: transaction.price < 0 ? 'var(--n-error)' : 'var(--n-success)' }}>
           {isBankView && transaction.price >= 0 ? '+' : ''}₪{formatNumber(Math.abs(transaction.price))}
         </Typography>
       </Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
         {isEditing ? (
           <CategoryAutocomplete value={editCategory || ''} onChange={setEditCategory || (() => { })} options={availableCategories || []} applyToAll={applyToAll || false} onApplyToAllChange={setApplyToAll || (() => { })} showApplyToAll={editCategory !== transaction.category} />
-        ) : <Typography variant="caption" sx={{ color: '#3b82f6', background: 'rgba(59, 130, 246, 0.1)', p: '2px 8px', borderRadius: 1 }}>{transaction.category}</Typography>}
+        ) : <Typography variant="caption" sx={{ color: 'var(--n-info)', background: 'rgba(59, 130, 246, 0.1)', p: '2px 8px', borderRadius: 1 }}>{transaction.category}</Typography>}
       </Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Box sx={{ display: 'flex', alignItems: 'center' }}>
           <CardVendorIcon vendor={getCardVendor(transaction.account_number)} size={16} />
-          <Typography variant="caption" sx={{ ml: 1, color: 'text.secondary' }}>{getCardNickname(transaction.account_number) || 'Card'}</Typography>
+          <Typography variant="caption" sx={{ ml: 1, color: 'text.secondary' }}>{getCardNickname(transaction.account_number) || t('tx:table.fallbackCardLabel')}</Typography>
         </Box>
         <Box sx={{ display: 'flex', gap: 0.5 }}>
           {isEditing ? (
             <>
-              <IconButton size="small" onClick={onSave} sx={{ color: '#10b981' }}><CheckIcon fontSize="small" /></IconButton>
-              <IconButton size="small" onClick={onCancel} sx={{ color: '#ef4444' }}><CloseIcon fontSize="small" /></IconButton>
+              <Tooltip title={t('common:actions.save')}>
+                <IconButton size="small" onClick={onSave} sx={{ color: 'var(--n-success)' }}><CheckIcon fontSize="small" /></IconButton>
+              </Tooltip>
+              <Tooltip title={t('common:actions.cancel')}>
+                <IconButton size="small" onClick={onCancel} sx={{ color: 'var(--n-error)' }}><CloseIcon fontSize="small" /></IconButton>
+              </Tooltip>
             </>
           ) : (
             <>
-              <IconButton size="small" onClick={onEdit} sx={{ color: '#3b82f6' }}><EditIcon fontSize="small" /></IconButton>
-              <IconButton size="small" onClick={() => setShowNoteInput(!showNoteInput)} sx={{ color: transaction.notes ? theme.palette.primary.main : theme.palette.text.disabled }}><NotesIcon fontSize="small" /></IconButton>
-              <IconButton size="small" onClick={onDelete} sx={{ color: '#ef4444' }}><DeleteIcon fontSize="small" /></IconButton>
+              <Tooltip title={t('tx:tooltips.editTransaction')}>
+                <IconButton size="small" onClick={onEdit} sx={{ color: 'var(--n-info)' }}><EditIcon fontSize="small" /></IconButton>
+              </Tooltip>
+              <Tooltip title={transaction.notes ? t('tx:tooltips.viewNotes') : t('tx:tooltips.openNotes')}>
+                <IconButton size="small" onClick={() => setShowNoteInput(!showNoteInput)} sx={{ color: transaction.notes ? theme.palette.primary.main : theme.palette.text.disabled }}><NotesIcon fontSize="small" /></IconButton>
+              </Tooltip>
+              {onDelete && (
+                <Tooltip title={t('tx:tooltips.deleteTransaction')}>
+                  <IconButton size="small" onClick={onDelete} sx={{ color: 'var(--n-error)' }}><DeleteIcon fontSize="small" /></IconButton>
+                </Tooltip>
+              )}
             </>
           )}
         </Box>
       </Box>
       {showNoteInput && (
         <Box sx={{ mt: 1 }}>
-          <TextField fullWidth multiline rows={2} size="small" value={noteContent} onChange={(e) => setNoteContent(e.target.value)} />
+          <TextField fullWidth multiline rows={2} size="small" placeholder={t('tx:notes.placeholder')} value={noteContent} onChange={(e) => setNoteContent(e.target.value)} />
           <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, mt: 1 }}>
-            <Button size="small" onClick={() => setShowNoteInput(false)}>Cancel</Button>
-            <Button size="small" variant="contained" onClick={() => { onNotesUpdate?.(noteContent); setShowNoteInput(false); }}>Save</Button>
+            <Button size="small" onClick={() => setShowNoteInput(false)}>{t('common:actions.cancel')}</Button>
+            <Button size="small" variant="contained" onClick={() => { onNotesUpdate?.(noteContent); setShowNoteInput(false); }}>{t('common:actions.save')}</Button>
           </Box>
         </Box>
       )}
     </Box>
   );
 };
-
-const TransactionMobileCard = (props: any) => (
-  <Paper elevation={0} sx={{ p: 2, borderRadius: '16px', border: 1, borderColor: 'divider' }}>
-    <TransactionMobileCardContent {...props} />
-  </Paper>
-);
 
 export default TransactionsTable;

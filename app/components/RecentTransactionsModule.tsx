@@ -1,27 +1,32 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Box, Typography, CircularProgress, useTheme } from '@mui/material';
 import ReceiptLongIcon from '@mui/icons-material/ReceiptLong';
-import TransactionsTable from './CategoryDashboard/components/TransactionsTable';
+import TransactionsTable, { Transaction } from './CategoryDashboard/components/TransactionsTable';
 import { useDateSelection } from '../context/DateSelectionContext';
 import { logger } from '../utils/client-logger';
+import { useTranslation } from 'react-i18next';
 
 const PAGE_SIZE = 50;
 
 const RecentTransactionsModule: React.FC = () => {
     const theme = useTheme();
+    const { t } = useTranslation('misc');
     const {
         startDate,
         endDate,
         billingCycle
     } = useDateSelection();
 
-    const [transactions, setTransactions] = useState<any[]>([]);
+    const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadingMore, setLoadingMore] = useState(false);
     const [page, setPage] = useState(0);
     const [hasMore, setHasMore] = useState(true);
+    // Incrementing request id — responses from superseded fetches are ignored
+    const requestIdRef = React.useRef(0);
 
     const fetchRecentTransactions = useCallback(async (isLoadMore: boolean = false) => {
+        const requestId = ++requestIdRef.current;
         if (!isLoadMore) {
             setLoading(true);
             setPage(0);
@@ -44,6 +49,7 @@ const RecentTransactionsModule: React.FC = () => {
             const response = await fetch(`/api/transactions?${params.toString()}`);
             if (!response.ok) throw new Error('Failed to fetch transactions');
             const data = await response.json();
+            if (requestId !== requestIdRef.current) return; // stale response — a newer fetch is in flight
 
             if (isLoadMore) {
                 setTransactions(prev => [...prev, ...data]);
@@ -56,16 +62,18 @@ const RecentTransactionsModule: React.FC = () => {
         } catch (error) {
             logger.error('Error fetching recent transactions', error as Error);
         } finally {
-            setLoading(false);
-            setLoadingMore(false);
+            if (requestId === requestIdRef.current) {
+                setLoading(false);
+                setLoadingMore(false);
+            }
         }
     }, [billingCycle, startDate, endDate, page]);
 
     useEffect(() => {
-        if (billingCycle || (startDate && endDate)) {
-            fetchRecentTransactions(false);
-        }
-    }, [billingCycle, startDate, endDate]); // Only refetch when dates change, not when fetchRecentTransactions changes (to avoid loop with page dependency)
+        if (!billingCycle && !(startDate && endDate)) return;
+        queueMicrotask(() => fetchRecentTransactions(false));
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchRecentTransactions intentionally excluded; it depends on page which would loop
+    }, [billingCycle, startDate, endDate]);
 
     const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
         const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
@@ -95,15 +103,14 @@ const RecentTransactionsModule: React.FC = () => {
             }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                     <ReceiptLongIcon sx={{ color: 'primary.main', fontSize: 20 }} />
-                    <Typography variant="subtitle2" sx={{ fontWeight: 700, fontSize: '0.8rem' }}>Recent Transactions</Typography>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 700, fontSize: '0.8rem' }}>{t('recentTransactions.title')}</Typography>
                 </Box>
                 {transactions.length > 0 && (
                     <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600 }}>
-                        {transactions.length} items
+                        {t('recentTransactions.itemsCount', { count: transactions.length })}
                     </Typography>
                 )}
             </Box>
-
             <Box
                 onScroll={handleScroll}
                 sx={{
@@ -126,7 +133,7 @@ const RecentTransactionsModule: React.FC = () => {
                     </Box>
                 ) : transactions.length === 0 ? (
                     <Box sx={{ p: 4, textAlign: 'center', color: 'text.secondary' }}>
-                        <Typography variant="body2">No transactions for this period</Typography>
+                        <Typography variant="body2">{t('recentTransactions.empty')}</Typography>
                     </Box>
                 ) : (
                     <>
@@ -162,8 +169,10 @@ const RecentTransactionsModule: React.FC = () => {
                         )}
                         {!hasMore && transactions.length > PAGE_SIZE && (
                             <Box sx={{ p: 2, textAlign: 'center' }}>
-                                <Typography variant="caption" color="text.secondary">
-                                    End of list
+                                <Typography variant="caption" sx={{
+                                    color: "text.secondary"
+                                }}>
+                                    {t('recentTransactions.endOfList')}
                                 </Typography>
                             </Box>
                         )}
